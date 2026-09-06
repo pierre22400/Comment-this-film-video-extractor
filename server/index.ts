@@ -3,24 +3,27 @@
 // la renvoie jamais au client. Ne journalise JAMAIS le contenu base64 des images.
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { loadConfig } from './config'
+import { fileURLToPath } from 'node:url'
+import { loadConfig, loadEnvFile } from './config'
+import { resolveCors } from './cors'
 import { createGeminiClient } from './geminiClient'
 import { handleDescribe, type RelayResult } from './describeHandler'
 import { MAX_REQUEST_BODY_LENGTH } from '../src/lib/analysis'
 
-const config = loadConfig()
+// Charge .env (à la racine du projet) SANS écraser l'environnement réel, puis
+// construit la configuration. La clé n'est jamais journalisée.
+const ENV_PATH = fileURLToPath(new URL('../.env', import.meta.url))
+const config = loadConfig(loadEnvFile(ENV_PATH))
 
-const CORS_HEADERS: Record<string, string> = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-}
-
-function sendJson(res: ServerResponse, result: RelayResult): void {
+function sendJson(
+  res: ServerResponse,
+  result: RelayResult,
+  corsHeaders: Record<string, string>,
+): void {
   const payload = JSON.stringify(result.json)
   res.writeHead(result.status, {
     'Content-Type': 'application/json; charset=utf-8',
-    ...CORS_HEADERS,
+    ...corsHeaders,
   })
   res.end(payload)
 }
@@ -48,15 +51,29 @@ const server = createServer((req, res) => {
   const method = req.method ?? 'GET'
   const url = req.url ?? '/'
 
+  // Décision CORS calculée une fois par requête à partir de l'origine reçue.
+  const origin = req.headers.origin
+  const cors = resolveCors(typeof origin === 'string' ? origin : undefined, config.allowedOrigin)
+
   const done = (result: RelayResult, snapshotId?: number) => {
-    sendJson(res, result)
+    sendJson(res, result, cors.headers)
     // Journalisation minimale : jamais d'image, jamais de clé.
     const idPart = snapshotId !== undefined ? ` snapshot=${snapshotId}` : ''
     console.log(`[relay] ${method} ${url} -> ${result.status}${idPart} (${Date.now() - started}ms)`)
   }
 
+  // Origine de navigateur non autorisée : refus clair (403), y compris en
+  // préflight. On ne renvoie jamais de joker ni la moindre donnée.
+  if (!cors.allowed) {
+    done({
+      status: 403,
+      json: { error: { code: 'ORIGIN_NOT_ALLOWED', message: 'Origine non autorisée.', retryable: false } },
+    })
+    return
+  }
+
   if (method === 'OPTIONS') {
-    res.writeHead(204, CORS_HEADERS)
+    res.writeHead(204, cors.headers)
     res.end()
     return
   }
@@ -121,4 +138,9 @@ server.listen(config.port, config.host, () => {
   console.log(`[relay] écoute sur http://${config.host}:${config.port}/api/describe`)
   console.log(`[relay] modèle: ${config.model}`)
   console.log(`[relay] clé Gemini: ${config.apiKey ? 'configurée' : 'ABSENTE (définir GEMINI_API_KEY)'}`)
+  console.log(
+    `[relay] origine autorisée: ${
+      config.allowedOrigin ?? 'AUCUNE (définir ALLOWED_EXTENSION_ORIGIN ; appels sans origine permis)'
+    }`,
+  )
 })

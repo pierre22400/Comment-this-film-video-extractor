@@ -205,23 +205,50 @@ Le dossier chargeable dans Chrome est **`dist/`**.
 Le relais est **séparé** de l'extension et lit la clé côté serveur uniquement.
 
 ```bash
-cp .env.example .env      # puis renseigner GEMINI_API_KEY
+cp .env.example .env      # puis renseigner GEMINI_API_KEY et ALLOWED_EXTENSION_ORIGIN
 pnpm server               # démarre le relais sur http://127.0.0.1:8787
 # ou, avec rechargement :
 pnpm server:watch
 ```
 
+`pnpm server` et `pnpm server:watch` **chargent réellement le fichier `.env`**
+au démarrage (parseur intégré, aucune dépendance ajoutée). Toute variable déjà
+définie dans l'environnement **reste prioritaire** sur le fichier `.env` ; la clé
+n'est jamais journalisée.
+
 ### Variables d'environnement (fichier `.env`, jamais committé)
 
-| Variable         | Rôle                                             | Défaut              |
-|------------------|--------------------------------------------------|---------------------|
-| `GEMINI_API_KEY` | Clé d'API Google Gemini (**obligatoire**)        | —                   |
-| `GEMINI_MODEL`   | Modèle Gemini Flash multimodal (optionnel)       | `gemini-2.5-flash`  |
-| `RELAY_HOST`     | Interface d'écoute                               | `127.0.0.1`         |
-| `RELAY_PORT`     | Port d'écoute                                    | `8787`              |
+| Variable                   | Rôle                                                             | Défaut              |
+|----------------------------|------------------------------------------------------------------|---------------------|
+| `GEMINI_API_KEY`           | Clé d'API Google Gemini (**obligatoire**)                        | —                   |
+| `GEMINI_MODEL`             | Modèle Gemini Flash multimodal (optionnel)                       | `gemini-2.5-flash`  |
+| `RELAY_HOST`               | Interface d'écoute (locale par défaut)                           | `127.0.0.1`         |
+| `RELAY_PORT`               | Port d'écoute                                                    | `8787`              |
+| `ALLOWED_EXTENSION_ORIGIN` | Origine d'extension autorisée (CORS), ex : `chrome-extension://<ID>` | — (voir ci-dessous) |
 
 Seul `.env.example` (sans vraie clé) est suivi par Git ; tous les autres `.env*`
 sont ignorés.
+
+### Restriction d'accès au relais (CORS)
+
+Le relais **n'utilise plus** `Access-Control-Allow-Origin: *`. Il autorise
+**uniquement** l'origine configurée dans `ALLOWED_EXTENSION_ORIGIN` :
+
+- origine autorisée → acceptée, avec un `Access-Control-Allow-Origin` **exact** (jamais de joker) ;
+- toute autre origine de navigateur → **refusée** (`403 ORIGIN_NOT_ALLOWED`), préflight `OPTIONS` compris ;
+- l'en-tête `Vary: Origin` est toujours renvoyé ;
+- l'écoute reste **locale** (`127.0.0.1`) par défaut ;
+- un appel **sans origine** (curl, tests serveur, outils non-navigateur) reste **permis**, ce qui conserve un moyen sûr de tester le serveur sans navigateur ;
+- si `ALLOWED_EXTENSION_ORIGIN` n'est pas défini, **aucune** origine de navigateur n'est acceptée (posture stricte).
+
+#### Récupérer l'identifiant d'extension (`chrome://extensions`)
+
+1. Ouvrir `chrome://extensions`.
+2. Activer le **Mode développeur** (coin supérieur droit).
+3. **Charger l'extension non empaquetée** → sélectionner le dossier `dist/`.
+4. Sous le nom de l'extension, repérer l'**ID** (ex : `abcdefghijklmnopabcdefghijklmnop`).
+5. Renseigner dans `.env` : `ALLOWED_EXTENSION_ORIGIN=chrome-extension://<ID>`.
+6. Redémarrer `pnpm server` pour prendre en compte la valeur.
 
 ### Contrat de l'endpoint `POST /api/describe`
 
