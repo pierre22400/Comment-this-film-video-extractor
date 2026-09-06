@@ -9,6 +9,9 @@ export type AnalysisState =
   | 'analyzing'
   | 'succeeded'
   | 'failed'
+  // Amendement : image absente/vide/indécodable/bloquée/suspecte. Jamais envoyée
+  // à Gemini, jamais retentée. Ce n'est PAS un échec de Gemini.
+  | 'not_applicable'
 
 /** Corps de requête minimal envoyé au relais serveur puis à Gemini. */
 export interface DescribeRequestBody {

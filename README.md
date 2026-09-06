@@ -17,6 +17,54 @@ WebP → stockage → galerie**) reste pleinement fonctionnel et n'a pas été d
 
 ---
 
+## Amendement — le snapshot devient une source facultative
+
+Un amendement limité rend le snapshot **facultatif** plutôt qu'un prérequis
+permanent : lorsqu'une image est indisponible (raison technique ou
+d'autorisation), la session **continue proprement** sans jamais envoyer d'image
+invalide à Gemini. Cet amendement **ne construit pas encore** le moteur complet
+sans image ; il fournit le vocabulaire structuré et les garde-fous que les
+cycles suivants réutiliseront. La file Gemini, le relais local, l'interface et
+les tests du Cycle 2 sont préservés.
+
+### Contrat de disponibilité visuelle (`src/lib/visual.ts`, module pur)
+
+- `VisualAvailability` : `available · unavailable · blocked · suspected_invalid · temporary_error`.
+- `VisualUnavailableCause` : `canvas_security · capture_blocked · permission_denied · image_empty · image_undecodable · suspected_blank_frame · temporary_capture_error · unsupported`.
+- `VisualIncident` : disponibilité, dernier code, message lisible, timecode, date.
+- `TimecodeObservation` : `{ mediaTime, snapshotId: number | null, visualAvailability, visualDescription: string | null }` — snapshot **facultatif**, pour les cycles suivants.
+
+> Formulation prudente : on n'affirme **jamais** qu'une DRM est responsable si le
+> navigateur ne le confirme pas. Un blocage est décrit « capture bloquée ou
+> inaccessible ».
+
+### Analyse : nouvel état `not_applicable`
+
+Une image absente, vide, indécodable, bloquée ou suspecte n'est **jamais**
+envoyée au relais Gemini. Dans ce cas : **aucun retry**, **aucun échec global**,
+état `not_applicable`, cause visuelle conservée, message clair dans l'interface,
+et **poursuite normale** de la session. Le chemin d'une image valide est
+**inchangé**.
+
+### Captures suspectes et garde de session
+
+Une frame presque noire ou uniforme est marquée `suspected_invalid` : elle est
+ignorée pour Gemini, son timecode est conservé, et **les captures suivantes
+continuent**. Une seule frame sombre ne condamne jamais la session : seule une
+série de **blocages consécutifs** (par défaut 3) finit par suspendre, pour
+éviter une boucle d'échecs. Les erreurs Canvas / de permission produisent
+désormais un **état structuré** (affiché dans le panneau d'état) au lieu de
+rester uniquement dans les logs.
+
+### Interface
+
+Le message d'image indisponible est **distinct** d'une erreur Gemini :
+« Image indisponible — la session continue sans analyse visuelle », avec la
+cause technique lorsqu'elle est connue. `not_applicable` n'est jamais présenté
+comme un échec de Gemini (puce neutre, non rouge).
+
+---
+
 ## Nouveautés du Cycle 2
 
 Pipeline d'analyse, **indépendant de la capture** :

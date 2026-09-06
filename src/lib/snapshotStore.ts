@@ -188,7 +188,8 @@ export async function markQueued(id: number): Promise<boolean> {
           return
         }
         const state = current.analysisState ?? 'not_requested'
-        if (state === 'queued' || state === 'analyzing') {
+        // 'not_applicable' est terminal (image non exploitable) : jamais remis en file.
+        if (state === 'queued' || state === 'analyzing' || state === 'not_applicable') {
           resolve(false)
           return
         }

@@ -1,6 +1,7 @@
 // Types partagés entre le content script, le service worker et le popup.
 
 import type { AnalysisState } from './analysis'
+import type { VisualAvailability, VisualUnavailableCause, VisualIncident } from './visual'
 
 /**
  * Un snapshot capturé et stocké dans IndexedDB.
@@ -36,6 +37,14 @@ export interface Snapshot {
   analysisModel?: string
   /** Durée de l'appel Gemini en millisecondes, si disponible. */
   analysisLatencyMs?: number
+
+  // --- Amendement : disponibilité visuelle ---
+  // Absent = 'available' (comportement inchangé pour une image valide).
+
+  /** Disponibilité visuelle de l'image (absent = exploitable). */
+  visualAvailability?: VisualAvailability
+  /** Cause structurée si l'image n'est pas exploitable. */
+  visualCause?: VisualUnavailableCause
 }
 
 /** Champs d'analyse modifiables (patch partiel appliqué à un snapshot). */
@@ -50,6 +59,8 @@ export type AnalysisPatch = Partial<
     | 'analysisErrorMessage'
     | 'analysisModel'
     | 'analysisLatencyMs'
+    | 'visualAvailability'
+    | 'visualCause'
   >
 >
 
@@ -66,6 +77,9 @@ export interface SnapshotMeta {
   videoWidth: number
   videoHeight: number
   imageFormat: string
+  // Amendement : disponibilité visuelle constatée à la capture (absent = exploitable).
+  visualAvailability?: VisualAvailability
+  visualCause?: VisualUnavailableCause
 }
 
 /** Informations sur la vidéo détectée, affichées dans le popup. */
@@ -85,4 +99,7 @@ export interface CaptureState {
   count: number
   paused: boolean
   videoInfo: VideoInfo | null
+  // Amendement : dernier incident visuel structuré (capture bloquée/suspecte),
+  // exposé pour affichage au lieu de rester uniquement dans les logs.
+  lastVisualIncident?: VisualIncident | null
 }

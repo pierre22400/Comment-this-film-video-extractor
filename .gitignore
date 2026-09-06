@@ -21,3 +21,5 @@ yarn-error.log*
 
 # vite / editor
 .DS_Store
+vite.config.ts.timestamp-*
+vite.config.*.timestamp-*

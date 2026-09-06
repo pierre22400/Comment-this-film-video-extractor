@@ -1,6 +1,6 @@
 import type { Snapshot } from '../../lib/types'
 import { formatTimecode } from '../../lib/timecode'
-import { analysisStateView } from '../analysisLabels'
+import { analysisStateView, notApplicableText } from '../analysisLabels'
 
 interface Props {
   snapshots: Snapshot[]
@@ -43,6 +43,8 @@ export function Gallery({ snapshots, urls, onSelect }: Props) {
                   <span className="mono">{formatTimecode(s.mediaTime)}</span>
                   {s.description ? (
                     <span className="thumb-desc">{s.description}</span>
+                  ) : s.analysisState === 'not_applicable' ? (
+                    <span className="thumb-na">{notApplicableText(s)}</span>
                   ) : (
                     <span className="thumb-dim">
                       {s.videoWidth} × {s.videoHeight}

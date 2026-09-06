@@ -1,6 +1,6 @@
 import type { Snapshot } from '../../lib/types'
 import { formatTimecode, formatDateTime } from '../../lib/timecode'
-import { analysisStateView, analysisErrorText } from '../analysisLabels'
+import { analysisStateView, analysisErrorText, notApplicableText } from '../analysisLabels'
 
 interface Props {
   snapshot: Snapshot
@@ -13,6 +13,7 @@ export function SnapshotDetail({ snapshot, url, onClose, onRetry }: Props) {
   const idLabel = String(snapshot.id).padStart(3, '0')
   const view = analysisStateView(snapshot)
   const errorText = analysisErrorText(snapshot)
+  const naText = notApplicableText(snapshot)
   const state = snapshot.analysisState ?? 'not_requested'
 
   function download() {
@@ -55,6 +56,8 @@ export function SnapshotDetail({ snapshot, url, onClose, onRetry }: Props) {
             <p className="analysis-desc">{snapshot.description}</p>
           ) : state === 'analyzing' || state === 'queued' ? (
             <p className="analysis-desc muted-text">Analyse en cours…</p>
+          ) : state === 'not_applicable' ? (
+            <p className="analysis-na">{naText}</p>
           ) : errorText ? (
             <p className="analysis-error">{errorText}</p>
           ) : (

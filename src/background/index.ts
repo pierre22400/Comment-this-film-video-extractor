@@ -11,6 +11,7 @@ import type { BackgroundRequest, BackgroundResponse, AnalysisStatus } from '../l
 import type { Snapshot } from '../lib/types'
 import { AnalysisQueue, type DescribeOutcome } from './analysisQueue'
 import type { DescribeSuccessBody, DescribeErrorBody } from '../lib/analysis'
+import { isAnalyzable, visualCauseMessage, type VisualUnavailableCause } from '../lib/visual'
 
 // Service worker MV3 : reçoit les images du content script (data URL), les
 // convertit en Blob et les stocke dans IndexedDB. Au Cycle 2, il pilote aussi la
@@ -103,12 +104,30 @@ const queue = new AnalysisQueue({
   async claim(id) {
     const snap = await claimForAnalysis(id)
     if (!snap) return null
+    const attempts = snap.analysisAttempts ?? 0
+    // Amendement : une image non exploitable n'est jamais envoyée à Gemini.
+    const availability = snap.visualAvailability ?? 'available'
+    if (!isAnalyzable(availability) || snap.image.size === 0) {
+      const cause: VisualUnavailableCause =
+        snap.visualCause ?? (snap.image.size === 0 ? 'image_empty' : 'unsupported')
+      return {
+        mediaTime: snap.mediaTime,
+        mimeType: snap.mimeType,
+        imageBase64: '',
+        attempts,
+        unanalyzable: {
+          availability: availability === 'available' ? 'unavailable' : availability,
+          cause,
+          message: visualCauseMessage(cause),
+        },
+      }
+    }
     const imageBase64 = await blobToBase64(snap.image)
     return {
       mediaTime: snap.mediaTime,
       mimeType: snap.mimeType,
       imageBase64,
-      attempts: snap.analysisAttempts ?? 0,
+      attempts,
     }
   },
   describe: describeViaRelay,
@@ -161,6 +180,11 @@ chrome.runtime.onMessage.addListener(
         switch (msg.type) {
           case 'SAVE_SNAPSHOT': {
             const blob = await dataUrlToBlob(msg.dataUrl)
+            // Amendement : une image marquée non exploitable à la capture (ex :
+            // frame suspecte) est stockée avec sa cause mais jamais envoyée à
+            // Gemini — état 'not_applicable', et non 'not_requested'.
+            const availability = msg.meta.visualAvailability ?? 'available'
+            const analyzable = isAnalyzable(availability)
             const snapshot: Omit<Snapshot, 'id'> = {
               capturedAt: msg.meta.capturedAt,
               mediaTime: msg.meta.mediaTime,
@@ -170,11 +194,16 @@ chrome.runtime.onMessage.addListener(
               videoHeight: msg.meta.videoHeight,
               mimeType: msg.meta.imageFormat,
               image: blob,
-              analysisState: 'not_requested',
+              analysisState: analyzable ? 'not_requested' : 'not_applicable',
+              visualAvailability: msg.meta.visualAvailability,
+              visualCause: msg.meta.visualCause,
+              analysisErrorMessage: analyzable
+                ? undefined
+                : visualCauseMessage(msg.meta.visualCause ?? 'unsupported'),
             }
             const id = await addSnapshot(snapshot)
-            // Analyse automatique uniquement si l'utilisateur l'a activée.
-            if (analysisEnabled) {
+            // Analyse automatique uniquement si activée ET si l'image est exploitable.
+            if (analysisEnabled && analyzable) {
               await markQueued(id)
               queue.enqueue(id)
             }

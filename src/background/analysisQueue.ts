@@ -11,6 +11,7 @@
 // - une réponse arrivant après un changement d'epoch (effacement) est ignorée.
 
 import type { AnalysisPatch } from '../lib/types'
+import type { VisualAvailability, VisualUnavailableCause } from '../lib/visual'
 
 export interface DescribeOutcome {
   ok: boolean
@@ -29,6 +30,15 @@ export interface ClaimedJob {
   imageBase64: string
   /** Nombre de tentatives DÉJÀ effectuées avant celle-ci. */
   attempts: number
+  /**
+   * Amendement : si défini, l'image N'EST PAS exploitable et ne doit JAMAIS être
+   * envoyée à Gemini. Le travail devient `not_applicable` sans appel ni retry.
+   */
+  unanalyzable?: {
+    availability: VisualAvailability
+    cause: VisualUnavailableCause
+    message: string
+  }
 }
 
 export interface QueueDeps {
@@ -150,6 +160,26 @@ export class AnalysisQueue {
   private async process(id: number): Promise<void> {
     const claimed = await this.deps.claim(id)
     if (!claimed) return // absent ou déjà pris en charge : anti double-analyse.
+
+    // Amendement : une image non exploitable (absente, vide, indécodable,
+    // bloquée ou suspecte) n'est JAMAIS envoyée à Gemini. On la marque
+    // `not_applicable` sans aucun appel réseau ni retry, et la session continue.
+    const unanalyzable =
+      claimed.unanalyzable ??
+      (claimed.imageBase64.length === 0
+        ? { availability: 'unavailable' as VisualAvailability, cause: 'image_empty' as VisualUnavailableCause, message: 'Image vide.' }
+        : undefined)
+    if (unanalyzable) {
+      await this.deps.save(id, {
+        analysisState: 'not_applicable',
+        analysisAttempts: claimed.attempts, // aucune tentative Gemini consommée
+        visualAvailability: unanalyzable.availability,
+        visualCause: unanalyzable.cause,
+        analysisErrorCode: undefined,
+        analysisErrorMessage: unanalyzable.message,
+      })
+      return
+    }
 
     const epoch0 = this.deps.epoch()
     let attempt = claimed.attempts

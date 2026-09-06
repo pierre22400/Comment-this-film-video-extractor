@@ -1,10 +1,50 @@
 import { CaptureError } from '../lib/errors'
+import type { FrameStats } from '../lib/visual'
 
 // Capture d'une frame : HTMLVideoElement -> Canvas -> drawImage -> WebP.
 
 const MAX_W = 1280
 const MAX_H = 720
 const QUALITY = 0.8
+
+/** Résultat d'une capture : image encodée + statistiques de luminance (si lisibles). */
+export interface CaptureResult {
+  dataUrl: string
+  stats: FrameStats | null
+}
+
+/**
+ * Statistiques de luminance échantillonnées depuis le canvas déjà dessiné.
+ * Renvoie null si les pixels ne sont pas lisibles (canvas protégé) — dans ce cas
+ * la protection se manifeste de toute façon aussi via toDataURL.
+ */
+export function computeFrameStats(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+): FrameStats | null {
+  if (width <= 0 || height <= 0) return null
+  try {
+    const { data } = ctx.getImageData(0, 0, width, height)
+    let sum = 0
+    let sumSq = 0
+    let n = 0
+    // Échantillonnage 1 pixel sur 16 : suffisant pour luminance moyenne + variance.
+    const step = 4 * 16
+    for (let i = 0; i + 2 < data.length; i += step) {
+      const luma = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]
+      sum += luma
+      sumSq += luma * luma
+      n += 1
+    }
+    if (n === 0) return null
+    const mean = sum / n
+    const variance = Math.max(0, sumSq / n - mean * mean)
+    return { meanLuma: mean, variance }
+  } catch {
+    return null
+  }
+}
 
 /** Calcule la taille cible en bornant à 1280x720 tout en conservant le ratio. */
 export function computeTargetSize(
@@ -28,10 +68,11 @@ function getCanvas(): HTMLCanvasElement {
 }
 
 /**
- * Dessine la frame courante de la vidéo dans un canvas et renvoie une data URL WebP.
- * Lève une CaptureError avec un code explicite en cas de problème.
+ * Dessine la frame courante de la vidéo dans un canvas et renvoie une data URL
+ * WebP accompagnée des statistiques de luminance (pour la détection d'image
+ * suspecte). Lève une CaptureError avec un code explicite en cas de problème.
  */
-export function captureFrame(video: HTMLVideoElement): string {
+export function captureFrame(video: HTMLVideoElement): CaptureResult {
   // HAVE_CURRENT_DATA (2) minimum pour disposer de la frame courante.
   if (video.readyState < 2) throw new CaptureError('VIDEO_NOT_READY')
 
@@ -53,6 +94,9 @@ export function captureFrame(video: HTMLVideoElement): string {
     throw new CaptureError('VIDEO_CAPTURE_BLOCKED')
   }
 
+  // Statistiques calculées avant l'encodage (canvas non protégé si drawImage a réussi).
+  const stats = computeFrameStats(ctx, width, height)
+
   let dataUrl: string
   try {
     dataUrl = cv.toDataURL('image/webp', QUALITY)
@@ -62,7 +106,7 @@ export function captureFrame(video: HTMLVideoElement): string {
   }
 
   if (!dataUrl || dataUrl === 'data:,') throw new CaptureError('CAPTURE_ERROR')
-  return dataUrl
+  return { dataUrl, stats }
 }
 
 /** Extrait le type MIME réel de la data URL (WebP, ou PNG en repli navigateur). */
