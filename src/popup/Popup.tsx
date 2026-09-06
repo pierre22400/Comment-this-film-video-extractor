@@ -1,16 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CaptureState, Snapshot } from '../lib/types'
+import type { AnalysisStatus } from '../lib/messages'
 import {
   getActiveTab,
   injectContentScript,
   sendToTab,
   clearSnapshots,
+  getAnalysisStatus,
+  setAnalysisEnabled,
+  enqueueUnanalyzed,
+  retrySnapshot,
 } from './api'
 import { getAllSnapshots, countSnapshots } from '../lib/snapshotStore'
 import { IntervalSelector } from './components/IntervalSelector'
 import { StatusPanel } from './components/StatusPanel'
+import { AnalysisControl } from './components/AnalysisControl'
 import { Gallery } from './components/Gallery'
 import { SnapshotDetail } from './components/SnapshotDetail'
+
+function unanalyzed(s: Snapshot): boolean {
+  const st = s.analysisState ?? 'not_requested'
+  return st === 'not_requested' || st === 'failed'
+}
 
 export function Popup() {
   const [tabId, setTabId] = useState<number | null>(null)
@@ -19,8 +30,14 @@ export function Popup() {
   const [state, setState] = useState<CaptureState | null>(null)
   const [intervalSeconds, setIntervalSeconds] = useState(10)
   const [snapshots, setSnapshots] = useState<Snapshot[]>([])
-  const [selected, setSelected] = useState<Snapshot | null>(null)
+  const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [analysis, setAnalysis] = useState<AnalysisStatus>({
+    enabled: false,
+    queued: 0,
+    analyzing: 0,
+  })
   const lastCount = useRef(-1)
+  const lastSig = useRef('')
 
   // Object URLs pour l'affichage des Blobs, recréés quand la liste change.
   const urls = useMemo(() => {
@@ -35,10 +52,18 @@ export function Popup() {
     }
   }, [urls])
 
+  // Recharge la galerie SANS provoquer de scintillement : on ne remplace la
+  // liste que si une donnée visible a réellement changé (id, état, description).
   const reloadGallery = useCallback(async () => {
     const all = await getAllSnapshots()
     lastCount.current = all.length
-    setSnapshots(all)
+    const sig = all
+      .map((s) => `${s.id}:${s.analysisState ?? 'not_requested'}:${s.description ? 1 : 0}`)
+      .join('|')
+    if (sig !== lastSig.current) {
+      lastSig.current = sig
+      setSnapshots(all)
+    }
   }, [])
 
   // Initialisation : onglet actif + injection du content script + première détection.
@@ -55,7 +80,7 @@ export function Popup() {
       }
       const tab = await getActiveTab()
       if (!tab?.id) {
-        setDetectError("Aucun onglet actif accessible.")
+        setDetectError('Aucun onglet actif accessible.')
         return
       }
       try {
@@ -76,6 +101,8 @@ export function Popup() {
           setDetectError('Aucune vidéo HTML5 détectée dans cet onglet.')
         }
       }
+      const st = await getAnalysisStatus()
+      if (!cancelled && st) setAnalysis(st)
       await reloadGallery()
     })()
     return () => {
@@ -83,22 +110,31 @@ export function Popup() {
     }
   }, [reloadGallery])
 
-  // Sondage régulier : timecode/état + rafraîchissement galerie si le nombre change.
+  // Sondage régulier : timecode/état vidéo + file d'analyse + galerie.
   useEffect(() => {
     if (!ready || tabId === null) return
     const timer = setInterval(async () => {
       const resp = await sendToTab(tabId, { type: 'GET_STATE' })
       if (resp.ok && resp.kind === 'STATE') {
         setState(resp.state)
-        setDetectError(resp.state.videoInfo === null ? 'Aucune vidéo HTML5 détectée dans cet onglet.' : null)
+        setDetectError(
+          resp.state.videoInfo === null ? 'Aucune vidéo HTML5 détectée dans cet onglet.' : null,
+        )
       }
+      const st = await getAnalysisStatus()
+      if (st) setAnalysis(st)
+
       const c = await countSnapshots()
-      if (c !== lastCount.current) await reloadGallery()
+      const busy = (st?.queued ?? 0) > 0 || (st?.analyzing ?? 0) > 0
+      // Recharge si le nombre change, ou tant que des analyses sont en cours.
+      if (c !== lastCount.current || busy) await reloadGallery()
     }, 1000)
     return () => clearInterval(timer)
   }, [ready, tabId, reloadGallery])
 
   const running = state?.running ?? false
+  const unanalyzedCount = snapshots.filter(unanalyzed).length
+  const selected = selectedId !== null ? snapshots.find((s) => s.id === selectedId) ?? null : null
 
   async function handleStart() {
     if (tabId === null) return
@@ -119,7 +155,27 @@ export function Popup() {
 
   async function handleClear() {
     await clearSnapshots()
-    setSelected(null)
+    setSelectedId(null)
+    lastSig.current = ''
+    await reloadGallery()
+  }
+
+  async function handleToggleAnalysis(enabled: boolean) {
+    const st = await setAnalysisEnabled(enabled)
+    setAnalysis(st ?? { enabled, queued: 0, analyzing: 0 })
+  }
+
+  async function handleAnalyzeAll() {
+    await enqueueUnanalyzed()
+    const st = await getAnalysisStatus()
+    if (st) setAnalysis(st)
+    await reloadGallery()
+  }
+
+  async function handleRetry(id: number) {
+    await retrySnapshot(id)
+    const st = await getAnalysisStatus()
+    if (st) setAnalysis(st)
     await reloadGallery()
   }
 
@@ -127,7 +183,7 @@ export function Popup() {
     <div className="app">
       <header className="app-header">
         <h1>Comment-this-film</h1>
-        <span className="cycle">Cycle 1 · capture locale · sans IA</span>
+        <span className="cycle">Cycle 2 · capture locale + description Gemini (relais local)</span>
       </header>
 
       <StatusPanel state={state} detectError={detectError} />
@@ -165,13 +221,23 @@ export function Popup() {
         </button>
       </div>
 
-      <Gallery snapshots={snapshots} urls={urls} onSelect={setSelected} />
+      <AnalysisControl
+        enabled={analysis.enabled}
+        queued={analysis.queued}
+        analyzing={analysis.analyzing}
+        unanalyzedCount={unanalyzedCount}
+        onToggle={handleToggleAnalysis}
+        onAnalyzeAll={handleAnalyzeAll}
+      />
+
+      <Gallery snapshots={snapshots} urls={urls} onSelect={(s) => setSelectedId(s.id)} />
 
       {selected && urls.get(selected.id) && (
         <SnapshotDetail
           snapshot={selected}
           url={urls.get(selected.id) as string}
-          onClose={() => setSelected(null)}
+          onClose={() => setSelectedId(null)}
+          onRetry={handleRetry}
         />
       )}
     </div>
