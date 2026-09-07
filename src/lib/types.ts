@@ -2,6 +2,7 @@
 
 import type { AnalysisState } from './analysis'
 import type { VisualAvailability, VisualUnavailableCause, VisualIncident } from './visual'
+import type { CaptureOrigin } from './probe'
 
 /**
  * Un snapshot capturé et stocké dans IndexedDB.
@@ -45,6 +46,14 @@ export interface Snapshot {
   visualAvailability?: VisualAvailability
   /** Cause structurée si l'image n'est pas exploitable. */
   visualCause?: VisualUnavailableCause
+
+  // --- Sonde visuelle ciblée (Cycle 2 révisé) ---
+  // Absent = 'periodic' (comportement Cycle 1/2 inchangé pour les snapshots existants).
+
+  /** Origine de la capture. */
+  captureOrigin?: CaptureOrigin
+  /** Identifiant de la sonde visuelle à l'origine de ce snapshot, si applicable. */
+  probeId?: string
 }
 
 /** Champs d'analyse modifiables (patch partiel appliqué à un snapshot). */
@@ -80,6 +89,9 @@ export interface SnapshotMeta {
   // Amendement : disponibilité visuelle constatée à la capture (absent = exploitable).
   visualAvailability?: VisualAvailability
   visualCause?: VisualUnavailableCause
+  // Sonde visuelle ciblée : absent = capture périodique classique.
+  captureOrigin?: CaptureOrigin
+  probeId?: string
 }
 
 /** Informations sur la vidéo détectée, affichées dans le popup. */

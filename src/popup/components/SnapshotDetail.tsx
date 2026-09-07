@@ -98,6 +98,12 @@ export function SnapshotDetail({ snapshot, url, onClose, onRetry }: Props) {
             <dt>Format</dt>
             <dd>{snapshot.mimeType}</dd>
           </div>
+          {snapshot.captureOrigin === 'visual_probe' && (
+            <div>
+              <dt>Origine</dt>
+              <dd>Sonde visuelle ciblée</dd>
+            </div>
+          )}
           {snapshot.analysisModel && (
             <div>
               <dt>Modèle</dt>

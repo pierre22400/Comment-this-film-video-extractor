@@ -1,7 +1,8 @@
 import { findBestVideo } from './videoDetector'
 import { captureFrame, detectImageFormat, type CaptureResult } from './frameCapture'
 import { CaptureScheduler } from './captureScheduler'
-import type { ContentRequest, ContentResponse } from '../lib/messages'
+import { VisualProbeScheduler, type ProbeCaptureOutcome } from './visualProbeScheduler'
+import type { ContentRequest, ContentResponse, ProbeDefinition } from '../lib/messages'
 import type { VideoInfo, CaptureState, SnapshotMeta } from '../lib/types'
 import { CaptureError, ERROR_MESSAGES, isCaptureErrorCode } from '../lib/errors'
 import {
@@ -40,6 +41,78 @@ declare global {
   let lastVisualIncident: VisualIncident | null = null
   const sessionGate = newSessionGate()
 
+  // Sonde visuelle ciblée : indépendante du minuteur périodique, pilotée par
+  // le timecode réel de la vidéo. Jamais déclenchée par une capture périodique.
+  function buildProbeSnapshotMeta(
+    video: HTMLVideoElement,
+    dataUrl: string,
+    probeId: string,
+    availability?: VisualAvailability,
+    cause?: VisualUnavailableCause,
+  ): SnapshotMeta {
+    return {
+      snapshotId: count + 1,
+      capturedAt: new Date().toISOString(),
+      mediaTime: video.currentTime,
+      pageTitle: document.title,
+      pageUrl: location.href,
+      videoWidth: video.videoWidth,
+      videoHeight: video.videoHeight,
+      imageFormat: detectImageFormat(dataUrl),
+      visualAvailability: availability,
+      visualCause: cause,
+      captureOrigin: 'visual_probe',
+      probeId,
+    }
+  }
+
+  function toScheduledProbe(probe: ProbeDefinition): {
+    startTime: number
+    endTime: number
+    preferredTime: number | null
+    maxCaptures: number
+  } {
+    return {
+      startTime: probe.startTime,
+      endTime: probe.endTime,
+      preferredTime: probe.preferredTime,
+      maxCaptures: probe.maxCaptures,
+    }
+  }
+
+  const probeScheduler = new VisualProbeScheduler({
+    onStatusUpdate(id, status) {
+      chrome.runtime.sendMessage({ type: 'PROBE_STATUS_UPDATE', id, status })
+    },
+    onOutcome(id, outcome: ProbeCaptureOutcome) {
+      const video = currentVideo
+      if (outcome.kind === 'captured') {
+        if (!video) return
+        count += 1
+        chrome.runtime.sendMessage({
+          type: 'PROBE_CAPTURED',
+          id,
+          dataUrl: outcome.dataUrl,
+          meta: buildProbeSnapshotMeta(video, outcome.dataUrl, id, outcome.availability, outcome.cause),
+          actualCaptureTime: outcome.mediaTime,
+          captureAttempts: outcome.captureAttempts,
+        })
+        return
+      }
+      if (outcome.kind === 'unavailable') {
+        chrome.runtime.sendMessage({
+          type: 'PROBE_UNAVAILABLE',
+          id,
+          cause: outcome.cause,
+          mediaTime: outcome.mediaTime,
+          captureAttempts: outcome.captureAttempts,
+        })
+        return
+      }
+      chrome.runtime.sendMessage({ type: 'PROBE_MISSED', id, captureAttempts: outcome.captureAttempts })
+    },
+  })
+
   function getVideoInfo(v: HTMLVideoElement | null): VideoInfo | null {
     if (!v) return null
     return {
@@ -56,6 +129,9 @@ declare global {
     // On rafraîchit la référence vidéo pour refléter les changements de page.
     const v = currentVideo && currentVideo.isConnected ? currentVideo : findBestVideo()
     currentVideo = v
+    // La sonde visuelle ciblée fonctionne indépendamment de la capture
+    // périodique : on la rattache dès qu'une vidéo est disponible.
+    if (v) probeScheduler.attach(v)
     return {
       running: capturing,
       intervalMs,
@@ -203,6 +279,27 @@ declare global {
             break
           }
           case 'GET_STATE': {
+            sendResponse({ ok: true, kind: 'STATE', state: getState() })
+            break
+          }
+          case 'REGISTER_VISUAL_PROBE': {
+            const v = currentVideo && currentVideo.isConnected ? currentVideo : findBestVideo()
+            currentVideo = v
+            if (!v) {
+              sendResponse({
+                ok: false,
+                code: 'VIDEO_NOT_FOUND',
+                message: ERROR_MESSAGES.VIDEO_NOT_FOUND,
+              })
+              break
+            }
+            probeScheduler.attach(v)
+            probeScheduler.register({ id: msg.id, ...toScheduledProbe(msg.probe) })
+            sendResponse({ ok: true, kind: 'STATE', state: getState() })
+            break
+          }
+          case 'UNREGISTER_VISUAL_PROBE': {
+            probeScheduler.unregister(msg.id)
             sendResponse({ ok: true, kind: 'STATE', state: getState() })
             break
           }

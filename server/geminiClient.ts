@@ -18,10 +18,27 @@ export interface GeminiDescribeInput {
   mediaTime: number
 }
 
+export interface GeminiProbeInput {
+  imageBase64: string
+  mimeType: string
+  purpose: string
+  question: string
+}
+
+/** Réponse brute (non validée) renvoyée par le modèle pour une sonde visuelle. */
+export interface GeminiProbeRawOutput {
+  answer?: unknown
+  observations?: unknown
+  confidence?: unknown
+  limitations?: unknown
+}
+
 export interface GeminiClient {
   readonly model: string
   /** Renvoie la description brute produite par le modèle (texte). */
   describe(input: GeminiDescribeInput): Promise<string>
+  /** Renvoie la réponse structurée brute (NON validée) à une sonde visuelle. */
+  probe(input: GeminiProbeInput): Promise<GeminiProbeRawOutput>
 }
 
 // Consigne stricte : décrire uniquement le visible, en français, sans identifier
@@ -36,6 +53,26 @@ const PROMPT = [
   'Ne devine pas le contexte, l\u2019intrigue, le lieu réel ni ce qui se passe hors champ.',
   'Réponds strictement en JSON : {"description": "..."}.',
 ].join(' ')
+
+// Sonde visuelle ciblée : prompt STRICT en anglais. Le modèle doit répondre
+// uniquement à partir de ce qui est visible dans CETTE image isolée, ne jamais
+// inventer une marque/un modèle non certain, ne jamais identifier le film, la
+// série, l'épisode ni une personne réelle, et ne jamais raconter d'anecdote ou
+// d'intrigue. La réponse doit être un JSON structuré strict.
+const PROBE_PROMPT_TEMPLATE = (purpose: string, question: string) =>
+  [
+    'You are a careful visual-inspection tool analyzing a single isolated video frame.',
+    `The requester's stated purpose for this probe is: "${purpose}".`,
+    `Their specific question is: "${question}"`,
+    'Answer ONLY based on what is directly visible in this exact image.',
+    'Never invent a brand, model, name, or identity you are not visually certain of.',
+    'Never identify the film, show, episode, or any real person.',
+    'Never guess the plot, backstory, or anything outside the frame.',
+    'If you are uncertain, say so explicitly in your answer and lower your confidence accordingly.',
+    'List any limitations that reduce your certainty (e.g. low resolution, motion blur, partial occlusion, poor lighting).',
+    'Respond strictly as JSON: {"answer": "...", "observations": ["..."], "confidence": 0.0, "limitations": ["..."]}.',
+    '"confidence" is a number between 0 and 1. "observations" and "limitations" are arrays of short strings (can be empty).',
+  ].join(' ')
 
 const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models'
 
@@ -106,6 +143,59 @@ export function createGeminiClient(opts: {
         // Repli : si ce n'est pas du JSON valide, on renvoie le texte brut ;
         // la validation finale (normalizeDescription) décidera de sa validité.
         return text
+      }
+    },
+
+    async probe(input: GeminiProbeInput): Promise<GeminiProbeRawOutput> {
+      const url = `${GEMINI_ENDPOINT}/${encodeURIComponent(opts.model)}:generateContent`
+      const payload = {
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: PROBE_PROMPT_TEMPLATE(input.purpose, input.question) },
+              { inline_data: { mime_type: input.mimeType, data: input.imageBase64 } },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'OBJECT',
+            properties: {
+              answer: { type: 'STRING' },
+              observations: { type: 'ARRAY', items: { type: 'STRING' } },
+              confidence: { type: 'NUMBER' },
+              limitations: { type: 'ARRAY', items: { type: 'STRING' } },
+            },
+            required: ['answer', 'confidence'],
+          },
+        },
+      }
+
+      const res = await doFetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': opts.apiKey,
+        },
+        body: JSON.stringify(payload),
+      })
+
+      if (!res.ok) {
+        throw new GeminiApiError(res.status, `Gemini a répondu ${res.status}`)
+      }
+
+      const data = (await res.json()) as GeminiResponse
+      const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? ''
+
+      try {
+        return JSON.parse(text) as GeminiProbeRawOutput
+      } catch {
+        // JSON invalide : on renvoie un objet vide ; la validation finale
+        // (validateProbeStructuredResponse) le rejettera proprement.
+        return {}
       }
     },
   }

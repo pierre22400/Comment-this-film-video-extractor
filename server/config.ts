@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs'
 // Modèle Gemini Flash multimodal par défaut. Défini à UN SEUL endroit et
 // surchargeable via la variable d'environnement GEMINI_MODEL — jamais dispersé
 // dans le code de l'extension.
-export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash'
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.6-flash'
 
 export interface ServerConfig {
   apiKey: string | undefined

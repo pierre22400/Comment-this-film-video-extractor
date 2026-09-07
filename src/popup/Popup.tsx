@@ -1,20 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CaptureState, Snapshot } from '../lib/types'
-import type { AnalysisStatus } from '../lib/messages'
+import type { AnalysisStatus, ProbeDefinition } from '../lib/messages'
+import type { VisualProbeRequest } from '../lib/probe'
 import {
   getActiveTab,
   injectContentScript,
   sendToTab,
   clearSnapshots,
   getAnalysisStatus,
-  setAnalysisEnabled,
   enqueueUnanalyzed,
   retrySnapshot,
+  createVisualProbe,
+  cancelVisualProbe,
+  listVisualProbes,
 } from './api'
 import { getAllSnapshots, countSnapshots } from '../lib/snapshotStore'
 import { IntervalSelector } from './components/IntervalSelector'
 import { StatusPanel } from './components/StatusPanel'
-import { AnalysisControl } from './components/AnalysisControl'
+import { DiagnosticPanel } from './components/DiagnosticPanel'
+import { VisualProbePanel } from './components/VisualProbePanel'
 import { Gallery } from './components/Gallery'
 import { SnapshotDetail } from './components/SnapshotDetail'
 
@@ -31,11 +35,8 @@ export function Popup() {
   const [intervalSeconds, setIntervalSeconds] = useState(10)
   const [snapshots, setSnapshots] = useState<Snapshot[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
-  const [analysis, setAnalysis] = useState<AnalysisStatus>({
-    enabled: false,
-    queued: 0,
-    analyzing: 0,
-  })
+  const [analysis, setAnalysis] = useState<AnalysisStatus>({ queued: 0, analyzing: 0 })
+  const [probes, setProbes] = useState<VisualProbeRequest[]>([])
   const lastCount = useRef(-1)
   const lastSig = useRef('')
 
@@ -103,6 +104,8 @@ export function Popup() {
       }
       const st = await getAnalysisStatus()
       if (!cancelled && st) setAnalysis(st)
+      const pr = await listVisualProbes()
+      if (!cancelled) setProbes(pr)
       await reloadGallery()
     })()
     return () => {
@@ -110,7 +113,7 @@ export function Popup() {
     }
   }, [reloadGallery])
 
-  // Sondage régulier : timecode/état vidéo + file d'analyse + galerie.
+  // Sondage régulier : timecode/état vidéo + file de diagnostic + sondes + galerie.
   useEffect(() => {
     if (!ready || tabId === null) return
     const timer = setInterval(async () => {
@@ -123,6 +126,8 @@ export function Popup() {
       }
       const st = await getAnalysisStatus()
       if (st) setAnalysis(st)
+      const pr = await listVisualProbes()
+      setProbes(pr)
 
       const c = await countSnapshots()
       const busy = (st?.queued ?? 0) > 0 || (st?.analyzing ?? 0) > 0
@@ -158,11 +163,7 @@ export function Popup() {
     setSelectedId(null)
     lastSig.current = ''
     await reloadGallery()
-  }
-
-  async function handleToggleAnalysis(enabled: boolean) {
-    const st = await setAnalysisEnabled(enabled)
-    setAnalysis(st ?? { enabled, queued: 0, analyzing: 0 })
+    setProbes(await listVisualProbes())
   }
 
   async function handleAnalyzeAll() {
@@ -179,11 +180,24 @@ export function Popup() {
     await reloadGallery()
   }
 
+  async function handleCreateProbe(def: ProbeDefinition): Promise<boolean> {
+    if (tabId === null) return false
+    const created = await createVisualProbe(tabId, def)
+    setProbes(await listVisualProbes())
+    return created !== null
+  }
+
+  async function handleCancelProbe(id: string) {
+    if (tabId === null) return
+    await cancelVisualProbe(tabId, id)
+    setProbes(await listVisualProbes())
+  }
+
   return (
     <div className="app">
       <header className="app-header">
         <h1>Comment-this-film</h1>
-        <span className="cycle">Cycle 2 · capture locale + description Gemini (relais local)</span>
+        <span className="cycle">Cycle 2 · capture locale + sondes visuelles ciblées (relais local)</span>
       </header>
 
       <StatusPanel state={state} detectError={detectError} />
@@ -221,12 +235,17 @@ export function Popup() {
         </button>
       </div>
 
-      <AnalysisControl
-        enabled={analysis.enabled}
+      <VisualProbePanel
+        probes={probes}
+        currentTime={state?.videoInfo?.currentTime ?? null}
+        onCreate={handleCreateProbe}
+        onCancel={handleCancelProbe}
+      />
+
+      <DiagnosticPanel
         queued={analysis.queued}
         analyzing={analysis.analyzing}
         unanalyzedCount={unanalyzedCount}
-        onToggle={handleToggleAnalysis}
         onAnalyzeAll={handleAnalyzeAll}
       />
 

@@ -17,11 +17,11 @@ describe('parseDotEnv', () => {
 
   it('gère le préfixe export et les guillemets', () => {
     const vars = parseDotEnv(
-      ['export GEMINI_MODEL="gemini-2.5-flash"', "ALLOWED_EXTENSION_ORIGIN='chrome-extension://xyz'"].join(
+      ['export GEMINI_MODEL="gemini-3.6-flash"', "ALLOWED_EXTENSION_ORIGIN='chrome-extension://xyz'"].join(
         '\n',
       ),
     )
-    expect(vars.GEMINI_MODEL).toBe('gemini-2.5-flash')
+    expect(vars.GEMINI_MODEL).toBe('gemini-3.6-flash')
     expect(vars.ALLOWED_EXTENSION_ORIGIN).toBe('chrome-extension://xyz')
   })
 })

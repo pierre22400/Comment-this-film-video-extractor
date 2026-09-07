@@ -65,6 +65,71 @@ comme un échec de Gemini (puce neutre, non rouge).
 
 ---
 
+## Amendement (révision) — sonde visuelle ciblée et programmable
+
+Une seconde révision ajoute une capacité **précise et bornée**, distincte de la
+capture périodique : une **sonde visuelle** — « regarde entre `t1` et `t2`, dans
+un but donné, et réponds à cette question précise » — créée **explicitement**
+par l'utilisateur, jamais déclenchée par une capture automatique.
+
+### Ce qui change
+
+- **Plus aucun appel Gemini automatique lié à la capture périodique.** L'ancienne
+  bascule « Analyse Gemini activée/désactivée » (qui décrivait chaque nouveau
+  snapshot périodique) est **retirée**. Le panneau **Diagnostic manuel** ne
+  conserve que des actions explicites (analyser les captures non analysées en un
+  clic, réessayer un snapshot en échec) — jamais lié à la capture périodique.
+- **Nouvelle sonde visuelle ciblée**, pilotée par le **timecode réel** de la
+  vidéo (`timeupdate`/`seeked`/`pause`, jamais un minuteur mural indépendant) :
+  gère nativement la pause/reprise, le seek en avant (fenêtre sautée = manquée,
+  jamais de boucle) et le seek en arrière (idempotence stricte — une sonde déjà
+  résolue ne capture jamais deux fois).
+- **Nouveau modèle par défaut : `gemini-3.6-flash`** (`DEFAULT_GEMINI_MODEL`,
+  surchargeable via `GEMINI_MODEL`). Le fournisseur reste inchangé : appel REST
+  direct à `generativelanguage.googleapis.com/v1beta`, clé dans l'en-tête
+  `x-goog-api-key` — aucun SDK propriétaire, aucun endpoint déprécié.
+
+### Cycle de vie d'une sonde
+
+```
+scheduled → waiting → capturing → captured → analyzing → succeeded
+                                        ↘ unavailable (image jamais exploitable)
+                     ↘ missed (fenêtre dépassée sans la moindre tentative)
+scheduled/waiting → cancelled (annulation explicite)
+```
+
+- **Capture** (`src/content/visualProbeScheduler.ts`) : une image presque
+  noire/uniforme est conservée (`suspected_invalid`) mais **jamais** envoyée à
+  Gemini ; une capture bloquée/en erreur répétée jusqu'à épuisement du budget
+  (`maxCaptures`, 1 à 3) devient `unavailable` **sans aucune image stockée**.
+  Une erreur sur une sonde n'affecte jamais les autres sondes actives.
+- **Analyse** (`src/background/visualProbeQueue.ts`, file **séparée** de celle du
+  diagnostic manuel) : ne reçoit QUE des sondes `captured` avec une image
+  `available` ; retries bornés uniquement sur erreurs transitoires ; une réponse
+  tardive après suppression (changement d'epoch) ne ressuscite rien.
+- **Relais** (`POST /api/visual-probe`, nouvel endpoint **distinct** de
+  `/api/describe`) : prompt strict en anglais (ne décrire que le visible, ne
+  jamais inventer une marque/un modèle non certain, ne jamais identifier le
+  film/la série/une personne réelle, ne jamais raconter d'intrigue) ; réponse
+  structurée `{ answer, observations[], confidence, limitations[] }` **validée
+  avant tout stockage** — une réponse vide, mal typée ou hors bornes devient une
+  erreur, jamais un succès stocké.
+
+### Interface
+
+Nouveau panneau **Sondes visuelles** : création (fenêtre, intention, question),
+liste avec statut et réponse, annulation d'une sonde non encore résolue, et un
+raccourci démo (« sonde dans 10 s »). Panneau **Diagnostic manuel** distinct,
+sans bascule automatique.
+
+> Cette révision ne construit pas un moteur de sondes illimité : une image par
+> sonde (au plus `maxCaptures` tentatives), aucune identification d'œuvre/de
+> personne, aucun raisonnement inter-images, aucune recherche Internet. Ce sont
+> les mêmes limites strictes que le Cycle 2 initial, simplement appliquées au
+> nouveau contrat structuré.
+
+---
+
 ## Nouveautés du Cycle 2
 
 Pipeline d'analyse, **indépendant de la capture** :
@@ -80,8 +145,10 @@ snapshot WebP
 ```
 
 Une analyse lente ou en échec **ne bloque jamais** la capture des snapshots
-suivants. La bascule « Analyse Gemini » est **désactivée par défaut** pour éviter
-tout appel payant involontaire.
+suivants. Aucune analyse n'est automatique : le **diagnostic manuel** (analyser
+les captures non analysées, réessayer un échec) et les **sondes visuelles
+ciblées** (voir la section d'amendement ci-dessus) sont les deux seuls chemins
+qui appellent Gemini, tous deux déclenchés explicitement par l'utilisateur.
 
 ### Données envoyées à Gemini
 
@@ -148,26 +215,36 @@ src/
 
 ```
 server/                     Relais serveur local (SÉPARÉ de l'extension)
-  config.ts                 Lecture env : GEMINI_API_KEY, GEMINI_MODEL, host/port
-  geminiClient.ts           Client Gemini multimodal (interface + implémentation)
-  describeHandler.ts        Handler PUR /api/describe (validation + appel + validation réponse)
+  config.ts                 Lecture env : GEMINI_API_KEY, GEMINI_MODEL, host/port, CORS
+  cors.ts                   Politique CORS PURE (origine autorisée, jamais de joker)
+  geminiClient.ts           Client Gemini multimodal (describe() + probe() ; interface + implémentation)
+  describeHandler.ts        Handler PUR /api/describe (diagnostic manuel)
+  visualProbeHandler.ts     Handler PUR /api/visual-probe (sonde visuelle, réponse structurée validée)
   index.ts                  Serveur HTTP Node (127.0.0.1), CORS, timeouts, logs sans image
   tsconfig.json
 
 src/lib/
-  analysis.ts               Types + validation + classification retry PARTAGÉS
-  types.ts                  Snapshot étendu (champs d'analyse optionnels) + AnalysisPatch
-  snapshotStore.ts          Migration IndexedDB v1→v2 + claim atomique + patch ciblé
-  messages.ts               Messages d'analyse popup <-> service worker
+  analysis.ts               Types + validation + classification retry PARTAGÉS (diagnostic manuel)
+  visual.ts                 Contrat de disponibilité visuelle (image facultative)
+  probe.ts                  Contrat de la sonde visuelle : types, validation requête/réponse
+  types.ts                  Snapshot étendu (captureOrigin/probeId optionnels) + AnalysisPatch
+  snapshotStore.ts          Migration IndexedDB v1→v2→v3 (NON destructive) + CRUD sondes
+  messages.ts               Messages popup <-> content script <-> service worker
 
 src/background/
-  analysisQueue.ts          File d'attente PURE (concurrence 1, retries, epoch)
-  index.ts                  Câblage : blob→base64, appel relais, bascule, récupération
+  analysisQueue.ts          File PURE du diagnostic manuel (concurrence 1, retries, epoch)
+  visualProbeQueue.ts       File PURE des sondes visuelles (séparée, même design éprouvé)
+  index.ts                  Câblage : blob→base64, appels relais, CRUD sondes, récupération
+
+src/content/
+  visualProbeScheduler.ts   Sonde visuelle : capture pilotée par le timecode réel de la vidéo
 
 src/popup/
-  analysisLabels.ts         Libellés/états d'analyse
-  components/AnalysisControl.tsx   Bascule + analyse par lot
-  (Gallery / SnapshotDetail mis à jour : état, description, erreur, réessai, modèle, latence)
+  analysisLabels.ts         Libellés/états du diagnostic manuel
+  probeLabels.ts            Libellés FR des sondes visuelles (statuts, intentions)
+  components/DiagnosticPanel.tsx    Actions explicites uniquement (jamais de bascule automatique)
+  components/VisualProbePanel.tsx  Création/liste/annulation de sondes + raccourci démo
+  (Gallery / SnapshotDetail mis à jour : origine de capture, description, erreur, réessai)
 
 tests/                      Tests Vitest (faux client Gemini, aucun appel payant)
 ```
@@ -221,7 +298,7 @@ n'est jamais journalisée.
 | Variable                   | Rôle                                                             | Défaut              |
 |----------------------------|------------------------------------------------------------------|---------------------|
 | `GEMINI_API_KEY`           | Clé d'API Google Gemini (**obligatoire**)                        | —                   |
-| `GEMINI_MODEL`             | Modèle Gemini Flash multimodal (optionnel)                       | `gemini-2.5-flash`  |
+| `GEMINI_MODEL`             | Modèle Gemini Flash multimodal (optionnel)                       | `gemini-3.6-flash`  |
 | `RELAY_HOST`               | Interface d'écoute (locale par défaut)                           | `127.0.0.1`         |
 | `RELAY_PORT`               | Port d'écoute                                                    | `8787`              |
 | `ALLOWED_EXTENSION_ORIGIN` | Origine d'extension autorisée (CORS), ex : `chrome-extension://<ID>` | — (voir ci-dessous) |
@@ -260,6 +337,21 @@ Le relais valide strictement la méthode, le type MIME, la présence/taille de
 l'image, l'identifiant, le timecode (fini et positif) et la taille de requête.
 La réponse du modèle est **validée avant d'être renvoyée** : une réponse vide ou
 mal formée devient une erreur (jamais une description stockée).
+
+### Contrat de l'endpoint `POST /api/visual-probe`
+
+Distinct de `/api/describe` (diagnostic manuel, description libre) : répond à
+une **question ciblée** avec une réponse **structurée**, jamais stockée si invalide.
+
+Entrée : `{ probeId, snapshotId, mediaTime, mimeType, imageBase64, purpose, question }`.
+Succès : `{ probeId, snapshotId, mediaTime, purpose, question, answer, observations[], confidence, limitations[], model, latencyMs }`.
+Erreur : `{ error: { code, message, retryable } }` (même contrat que `/api/describe`).
+
+La réponse structurée est validée avant tout stockage : `answer` doit être une
+chaîne non vide, `confidence` est bornée dans `[0, 1]`, `observations` et
+`limitations` sont des tableaux de chaînes (éventuellement vides). Une réponse
+vide, mal typée ou hors bornes devient une erreur `INVALID_MODEL_RESPONSE`,
+jamais un succès stocké.
 
 ---
 
@@ -316,12 +408,14 @@ mal formée devient une erreur (jamais une description stockée).
 | Permission  | Pourquoi |
 |-------------|----------|
 | `activeTab` | Accès **temporaire** à l'onglet courant, accordé uniquement quand l'utilisateur ouvre le popup. Évite une permission large de type `<all_urls>`. |
-| `scripting` | Injecter programmatiquement le content script de capture dans l'onglet actif. |
-| `storage`   | Mémoriser la bascule « Analyse Gemini » (désactivée par défaut). |
+| `scripting` | Injecter programmatiquement le content script de capture (et de sonde visuelle) dans l'onglet actif. |
 
-`host_permissions` : **uniquement** `http://127.0.0.1:8787/*` (le relais local),
-jamais une permission d'hôte large. Le stockage des snapshots utilise
-**IndexedDB**, qui ne nécessite aucune permission.
+`host_permissions` : **uniquement** `http://127.0.0.1:8787/*` (le relais local,
+pour `/api/describe` **et** `/api/visual-probe`), jamais une permission d'hôte
+large. Le stockage des snapshots et des sondes visuelles utilise **IndexedDB**,
+qui ne nécessite aucune permission. La permission `storage` n'est plus
+nécessaire depuis le retrait de la bascule d'analyse automatique (diagnostic
+manuel = actions explicites uniquement).
 
 ---
 

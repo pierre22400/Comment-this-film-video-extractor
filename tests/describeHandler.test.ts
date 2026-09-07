@@ -7,6 +7,8 @@ function fakeGemini(impl: (input: { snapshotId: number }) => Promise<string> | s
   return {
     model: 'fake-model',
     describe: async (input) => impl({ snapshotId: input.snapshotId }),
+    // Non utilisé par ces tests (endpoint /api/describe uniquement) ; stub minimal.
+    probe: async () => ({ answer: 'stub', observations: [], confidence: 0, limitations: [] }),
   }
 }
 

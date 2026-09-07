@@ -524,6 +524,93 @@ body {
   grid-template-columns: 1fr 1fr;
 }
 
+/* --- Sondes visuelles ciblées --- */
+.probe-summary {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.probe-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.probe-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.probe-form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.probe-form input,
+.probe-form select,
+.probe-form textarea {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.probe-form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.probe-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.probe-item {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px;
+}
+
+.probe-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.probe-item-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.probe-question {
+  color: var(--text);
+}
+
+.probe-result {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .kv-wide {
   grid-column: 1 / -1;
 }

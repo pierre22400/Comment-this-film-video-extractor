@@ -38,6 +38,11 @@ export function Gallery({ snapshots, urls, onSelect }: Props) {
                 <span className="thumb-meta">
                   <span className="thumb-line">
                     <span className="thumb-id">#{String(s.id).padStart(3, '0')}</span>
+                    {s.captureOrigin === 'visual_probe' && (
+                      <span className="chip chip-idle" title="Issu d’une sonde visuelle">
+                        Sonde
+                      </span>
+                    )}
                     <span className={`chip chip-${view.kind}`}>{view.text}</span>
                   </span>
                   <span className="mono">{formatTimecode(s.mediaTime)}</span>

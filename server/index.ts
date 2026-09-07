@@ -8,7 +8,10 @@ import { loadConfig, loadEnvFile } from './config'
 import { resolveCors } from './cors'
 import { createGeminiClient } from './geminiClient'
 import { handleDescribe, type RelayResult } from './describeHandler'
+import { handleVisualProbe, type ProbeRelayResult } from './visualProbeHandler'
 import { MAX_REQUEST_BODY_LENGTH } from '../src/lib/analysis'
+
+type AnyRelayResult = RelayResult | ProbeRelayResult
 
 // Charge .env (à la racine du projet) SANS écraser l'environnement réel, puis
 // construit la configuration. La clé n'est jamais journalisée.
@@ -17,7 +20,7 @@ const config = loadConfig(loadEnvFile(ENV_PATH))
 
 function sendJson(
   res: ServerResponse,
-  result: RelayResult,
+  result: AnyRelayResult,
   corsHeaders: Record<string, string>,
 ): void {
   const payload = JSON.stringify(result.json)
@@ -55,7 +58,7 @@ const server = createServer((req, res) => {
   const origin = req.headers.origin
   const cors = resolveCors(typeof origin === 'string' ? origin : undefined, config.allowedOrigin)
 
-  const done = (result: RelayResult, snapshotId?: number) => {
+  const done = (result: AnyRelayResult, snapshotId?: number) => {
     sendJson(res, result, cors.headers)
     // Journalisation minimale : jamais d'image, jamais de clé.
     const idPart = snapshotId !== undefined ? ` snapshot=${snapshotId}` : ''
@@ -78,7 +81,7 @@ const server = createServer((req, res) => {
     return
   }
 
-  if (url !== '/api/describe') {
+  if (url !== '/api/describe' && url !== '/api/visual-probe') {
     done({ status: 404, json: { error: { code: 'NOT_FOUND', message: 'Route inconnue.', retryable: false } } })
     return
   }
@@ -121,21 +124,31 @@ const server = createServer((req, res) => {
     }
 
     const gemini = createGeminiClient({ apiKey: config.apiKey, model: config.model })
-    const result = await handleDescribe(
-      { method, contentType: req.headers['content-type'], body: parsed },
-      gemini,
-    )
     const snapshotId =
       parsed && typeof parsed === 'object' && 'snapshotId' in parsed
         ? (parsed as { snapshotId?: number }).snapshotId
         : undefined
+
+    if (url === '/api/visual-probe') {
+      const result = await handleVisualProbe(
+        { method, contentType: req.headers['content-type'], body: parsed },
+        gemini,
+      )
+      done(result, snapshotId)
+      return
+    }
+
+    const result = await handleDescribe(
+      { method, contentType: req.headers['content-type'], body: parsed },
+      gemini,
+    )
     done(result, snapshotId)
   })()
 })
 
 server.listen(config.port, config.host, () => {
   console.log(`[relay] Comment-this-film — relais Gemini`)
-  console.log(`[relay] écoute sur http://${config.host}:${config.port}/api/describe`)
+  console.log(`[relay] écoute sur http://${config.host}:${config.port} (/api/describe, /api/visual-probe)`)
   console.log(`[relay] modèle: ${config.model}`)
   console.log(`[relay] clé Gemini: ${config.apiKey ? 'configurée' : 'ABSENTE (définir GEMINI_API_KEY)'}`)
   console.log(

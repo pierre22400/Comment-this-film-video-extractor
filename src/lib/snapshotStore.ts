@@ -1,5 +1,7 @@
 import type { Snapshot, AnalysisPatch } from './types'
 import type { AnalysisState } from './analysis'
+import type { VisualProbeRequest, ProbeStatus } from './probe'
+import { isTerminalProbeStatus } from './probe'
 
 // Stockage local des snapshots dans IndexedDB (origine de l'extension).
 // Partagé par le service worker (écriture) et le popup (lecture) : les deux
@@ -8,20 +10,25 @@ import type { AnalysisState } from './analysis'
 
 const DB_NAME = 'comment-this-film'
 const STORE = 'snapshots'
-// v2 (Cycle 2) : ajout des champs d'analyse Gemini. La migration est NON
-// destructive — les snapshots du Cycle 1 sont conservés tels quels (les champs
-// d'analyse sont optionnels et traités comme 'not_requested' à la lecture).
-const VERSION = 2
+const PROBE_STORE = 'visualProbes'
+// v3 (Cycle 2 révisé) : ajout du store `visualProbes` (sondes visuelles ciblées).
+// La migration reste NON destructive — le store `snapshots` n'est jamais touché,
+// les snapshots existants (Cycle 1 et Cycle 2) restent lisibles sans changement.
+const VERSION = 3
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, VERSION)
     req.onupgradeneeded = () => {
       const db = req.result
-      // Création initiale (v1) OU montée de version : on garantit la présence
-      // du store sans jamais supprimer ni réécrire les enregistrements existants.
+      // Création initiale OU montée de version : on garantit la présence des
+      // stores sans jamais supprimer ni réécrire les enregistrements existants.
       if (!db.objectStoreNames.contains(STORE)) {
         db.createObjectStore(STORE, { keyPath: 'id', autoIncrement: true })
+      }
+      if (!db.objectStoreNames.contains(PROBE_STORE)) {
+        const probeStore = db.createObjectStore(PROBE_STORE, { keyPath: 'id' })
+        probeStore.createIndex('status', 'status')
       }
     }
     req.onsuccess = () => resolve(req.result)
@@ -242,7 +249,7 @@ export async function getResumableIds(): Promise<number[]> {
 }
 
 /**
- * Efface tous les snapshots ET leurs métadonnées.
+ * Efface tous les snapshots ET leurs métadonnées, ET toutes les sondes visuelles.
  * On supprime la base entière afin que le compteur d'id reparte proprement.
  */
 export function clearAll(): Promise<void> {
@@ -253,4 +260,164 @@ export function clearAll(): Promise<void> {
     // Si une connexion est encore ouverte ailleurs, on résout quand même.
     req.onblocked = () => resolve()
   })
+}
+
+// --- Sondes visuelles ciblées (Cycle 2 révisé) ---
+// Source de vérité PERSISTÉE du cycle de vie complet d'une sonde (capture +
+// analyse). Le content script n'a qu'une vue en direct éphémère de la phase
+// de capture (voir CaptureState.liveProbes) ; ce store est la référence.
+
+/** Crée une sonde (état initial, généralement 'scheduled'). Idempotent par id. */
+export async function createProbe(probe: VisualProbeRequest): Promise<void> {
+  const db = await openDB()
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(PROBE_STORE, 'readwrite')
+      const req = tx.objectStore(PROBE_STORE).put(probe)
+      req.onsuccess = () => resolve()
+      req.onerror = () => reject(req.error)
+    })
+  } finally {
+    db.close()
+  }
+}
+
+/** Lit une sonde par id (undefined si absente). */
+export async function getProbe(id: string): Promise<VisualProbeRequest | undefined> {
+  const db = await openDB()
+  try {
+    return await new Promise<VisualProbeRequest | undefined>((resolve, reject) => {
+      const tx = db.transaction(PROBE_STORE, 'readonly')
+      const req = tx.objectStore(PROBE_STORE).get(id)
+      req.onsuccess = () => resolve(req.result as VisualProbeRequest | undefined)
+      req.onerror = () => reject(req.error)
+    })
+  } finally {
+    db.close()
+  }
+}
+
+/** Renvoie toutes les sondes, triées par date de création croissante. */
+export async function listProbes(): Promise<VisualProbeRequest[]> {
+  const db = await openDB()
+  try {
+    const all = await new Promise<VisualProbeRequest[]>((resolve, reject) => {
+      const tx = db.transaction(PROBE_STORE, 'readonly')
+      const req = tx.objectStore(PROBE_STORE).getAll()
+      req.onsuccess = () => resolve(req.result as VisualProbeRequest[])
+      req.onerror = () => reject(req.error)
+    })
+    return all.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * Applique un patch partiel à une sonde existante. N'écrit RIEN si la sonde a
+ * disparu (aucune résurrection possible après suppression/effacement) et
+ * n'écrit rien non plus si la sonde est déjà dans un état TERMINAL (sauf si le
+ * patch la fait justement entrer dans cet état — transition, pas régression).
+ * Renvoie true si l'écriture a eu lieu.
+ */
+export async function updateProbe(
+  id: string,
+  patch: Partial<VisualProbeRequest>,
+): Promise<boolean> {
+  const db = await openDB()
+  try {
+    return await new Promise<boolean>((resolve, reject) => {
+      const tx = db.transaction(PROBE_STORE, 'readwrite')
+      const store = tx.objectStore(PROBE_STORE)
+      const getReq = store.get(id)
+      getReq.onsuccess = () => {
+        const current = getReq.result as VisualProbeRequest | undefined
+        if (!current) {
+          resolve(false)
+          return
+        }
+        // Une sonde déjà terminale ne peut être modifiée QUE si le patch ne
+        // tente pas de la faire régresser vers un statut non terminal.
+        if (isTerminalProbeStatus(current.status) && patch.status && !isTerminalProbeStatus(patch.status)) {
+          resolve(false)
+          return
+        }
+        const updated: VisualProbeRequest = {
+          ...current,
+          ...patch,
+          updatedAt: new Date().toISOString(),
+        }
+        const putReq = store.put(updated)
+        putReq.onsuccess = () => resolve(true)
+        putReq.onerror = () => reject(putReq.error)
+      }
+      getReq.onerror = () => reject(getReq.error)
+    })
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * Annule une sonde SI ET SEULEMENT SI elle n'est pas déjà dans un état
+ * terminal (une sonde 'succeeded'/'failed'/'missed'/'unavailable' ne peut plus
+ * être annulée ; une sonde déjà 'cancelled' reste 'cancelled').
+ */
+export async function cancelProbe(id: string): Promise<boolean> {
+  const probe = await getProbe(id)
+  if (!probe || isTerminalProbeStatus(probe.status)) return false
+  return updateProbe(id, { status: 'cancelled' as ProbeStatus })
+}
+
+/**
+ * Ids des sondes à reprendre après le réveil du service worker : toute sonde
+ * restée 'captured' (jamais mise en file) ou 'analyzing' (interrompue, remise
+ * en 'captured' pour être réclamée à nouveau).
+ */
+export async function getResumableProbeIds(): Promise<string[]> {
+  const all = await listProbes()
+  const ids: string[] = []
+  for (const p of all) {
+    if (p.status === 'analyzing') {
+      await updateProbe(p.id, { status: 'captured' })
+      ids.push(p.id)
+    } else if (p.status === 'captured') {
+      ids.push(p.id)
+    }
+  }
+  return ids
+}
+
+/**
+ * Réclame ATOMIQUEMENT une sonde 'captured' pour analyse (captured -> analyzing).
+ * Renvoie null si absente, déjà en analyse, ou dans un autre état (annulée,
+ * par exemple) — empêche toute double-analyse.
+ */
+export async function claimProbeForAnalysis(id: string): Promise<VisualProbeRequest | null> {
+  const db = await openDB()
+  try {
+    return await new Promise<VisualProbeRequest | null>((resolve, reject) => {
+      const tx = db.transaction(PROBE_STORE, 'readwrite')
+      const store = tx.objectStore(PROBE_STORE)
+      const getReq = store.get(id)
+      getReq.onsuccess = () => {
+        const current = getReq.result as VisualProbeRequest | undefined
+        if (!current || current.status !== 'captured') {
+          resolve(null)
+          return
+        }
+        const claimed: VisualProbeRequest = {
+          ...current,
+          status: 'analyzing',
+          updatedAt: new Date().toISOString(),
+        }
+        const putReq = store.put(claimed)
+        putReq.onsuccess = () => resolve(claimed)
+        putReq.onerror = () => reject(putReq.error)
+      }
+      getReq.onerror = () => reject(getReq.error)
+    })
+  } finally {
+    db.close()
+  }
 }
