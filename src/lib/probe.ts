@@ -64,7 +64,7 @@ export function isTerminalProbeStatus(status: ProbeStatus): boolean {
 }
 
 /** Origine d'un snapshot : périodique (Cycle 1), sonde visuelle, ou manuel (diagnostic). */
-export type CaptureOrigin = 'periodic' | 'visual_probe' | 'manual'
+export type CaptureOrigin = 'periodic' | 'visual_probe' | 'manual' | 'planned'
 
 export const MIN_PROBE_WINDOW_SECONDS = 0.5
 export const MAX_PROBE_WINDOW_SECONDS = 120

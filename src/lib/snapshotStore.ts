@@ -2,6 +2,7 @@ import type { Snapshot, AnalysisPatch } from './types'
 import type { AnalysisState } from './analysis'
 import type { VisualProbeRequest, ProbeStatus } from './probe'
 import { isTerminalProbeStatus } from './probe'
+import { countersFromItems, type GalleryItemState } from './gallery'
 import type { GalleryRun } from './gallery'
 
 // Stockage local des snapshots dans IndexedDB (origine de l'extension).
@@ -515,6 +516,42 @@ export async function updateGalleryRun(id: string, patch: Partial<GalleryRun>): 
           counters: patch.counters ?? current.counters,
         }
         const putReq = store.put(updated)
+        putReq.onsuccess = () => resolve(true)
+        putReq.onerror = () => reject(putReq.error)
+      }
+      getReq.onerror = () => reject(getReq.error)
+    })
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * Met à jour atomiquement l'état d'un timecode d'une galerie. Les transactions
+ * IndexedDB sérialisent les nombreux messages du runner sans perdre d'état.
+ */
+export async function updateGalleryItem(
+  galleryId: string,
+  item: GalleryItemState,
+): Promise<boolean> {
+  const db = await openDB()
+  try {
+    return await new Promise<boolean>((resolve, reject) => {
+      const tx = db.transaction(GALLERY_STORE, 'readwrite')
+      const store = tx.objectStore(GALLERY_STORE)
+      const getReq = store.get(galleryId)
+      getReq.onsuccess = () => {
+        const current = getReq.result as GalleryRun | undefined
+        if (!current) {
+          resolve(false)
+          return
+        }
+        const items = current.items ? [...current.items] : []
+        items[item.index] = { ...item }
+        const completeItems = items.filter((candidate): candidate is GalleryItemState => Boolean(candidate))
+        const counters = countersFromItems(completeItems)
+        counters.planned = current.counters.planned
+        const putReq = store.put({ ...current, items, counters })
         putReq.onsuccess = () => resolve(true)
         putReq.onerror = () => reject(putReq.error)
       }

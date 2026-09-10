@@ -15,6 +15,9 @@ interface Props {
   planState: PlanRunState | null
   /** Galeries planifiées existantes (plus récente d'abord). */
   runs: GalleryRun[]
+  /** Galerie dont les images sont actuellement affichées. */
+  selectedGalleryId: string | null
+  onSelectGallery: (galleryId: string | null) => void
   onRun: (plan: ResolvedPlan) => Promise<boolean>
   onCancel: () => void
   onAnalyzeGallery: (galleryId: string) => void
@@ -26,6 +29,8 @@ export function ScannerPanel({
   knownDuration,
   planState,
   runs,
+  selectedGalleryId,
+  onSelectGallery,
   onRun,
   onCancel,
   onAnalyzeGallery,
@@ -33,7 +38,6 @@ export function ScannerPanel({
   onDeleteGallery,
 }: Props) {
   const [text, setText] = useState('')
-  const [selectedGalleryId, setSelectedGalleryId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
@@ -44,7 +48,7 @@ export function ScannerPanel({
   }, [text, knownDuration])
 
   const running = planState?.running ?? false
-  const selectedRun = runs.find((r) => r.id === selectedGalleryId) ?? runs[0] ?? null
+  const selectedRun = runs.find((r) => r.id === selectedGalleryId) ?? null
 
   async function handleRun() {
     setError(null)
@@ -168,9 +172,10 @@ export function ScannerPanel({
           <label className="scanner-label">
             Galerie
             <select
-              value={selectedRun?.id ?? ''}
-              onChange={(e) => setSelectedGalleryId(e.target.value)}
+              value={selectedGalleryId ?? ''}
+              onChange={(e) => onSelectGallery(e.target.value || null)}
             >
+              <option value="">Toutes les captures</option>
               {runs.map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.name} · {PLATFORM_LABELS[r.platform]} · {galleryStateLabel(r.state)} ·{' '}

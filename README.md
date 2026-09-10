@@ -180,9 +180,11 @@ galerie au relais Gemini local. Les fonctionnalités et tests du Cycle 2 sont
 - **« Exécuter le plan »** / **« Annuler »**.
 - **seek** (défaut) : règle `video.currentTime`, attend `seeked` puis une frame
   présentée si disponible, applique `settleMs`, capture. Attentes et retries
-  **strictement bornés** (jamais de boucle infinie).
-- **playback** : suit la lecture **naturelle** jusqu'au timecode — **aucune
-  vitesse de lecture non exposée n'est jamais forcée**.
+  **strictement bornés** (jamais de boucle infinie). Le lecteur et les sondes
+  indépendantes sont restaurés après le scan.
+- **playback** : suit la lecture **naturelle** jusqu'au timecode, respecte les
+  pauses et ignore un timecode déjà dépassé — **aucune vitesse de lecture non
+  exposée n'est jamais forcée**.
 - Le timecode observé est **toujours** `video.currentTime`.
 - Statuts persistants : `pending`, `seeking`, `capturing`, `captured`,
   `skipped`, `unavailable`, `failed`, `cancelled`, avec progression, timecode
@@ -192,11 +194,13 @@ galerie au relais Gemini local. Les fonctionnalités et tests du Cycle 2 sont
 
 - Images en **WebP** (max 1280×720, qualité 0,80), inchangé.
 - Objet persistant **`GalleryRun`** (id, nom, date, URL/titre, plateforme,
-  fixture, stratégie, état, compteurs). **Une exécution = une nouvelle galerie.**
+  fixture, stratégie, état, compteurs et états détaillés des timecodes).
+  **Une exécution = une nouvelle galerie.**
   Migration IndexedDB **v3 → v4 non destructive** (test dédié).
 - **Reconnaissance de plateforme** : YouTube et Prime Video affichés
   explicitement, repli **HTML5 générique**.
-- **Sélecteur de galerie** + **effacement ciblé** après confirmation.
+- **Sélecteur de galerie** filtrant les images affichées + **effacement ciblé**
+  après confirmation.
 - **« Exporter la galerie »** : téléchargements **explicites** des WebP et d'un
   `manifest.json` sous `Téléchargements/Comment-this-film/<gallery-id>/`
   (permission minimale `downloads`). Une extension ne peut pas administrer

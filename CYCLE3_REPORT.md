@@ -92,14 +92,19 @@ Deux formes d'items :
   (avec repli borné par `seekTimeoutMs`), attend une frame réellement présentée
   via `requestVideoFrameCallback` si disponible (borné par `frameTimeoutMs`),
   applique `settleMs`, puis capture (retries bornés par `maxAttemptsPerItem`).
-- **playback** : laisse la lecture **naturelle** atteindre chaque timecode
-  (borné par `playbackTimeoutMs`). **Aucune vitesse de lecture non exposée par le
-  player n'est jamais forcée** ; le mode n'est pas un « turbo » de lecture.
+- **playback** : laisse la lecture **naturelle** atteindre chaque timecode. Une
+  pause ne consomme pas le délai d'inactivité ; le délai est réarmé tant que la
+  vidéo progresse. Un timecode déjà dépassé est ignoré au lieu de recapturer la
+  frame courante. **Aucune vitesse de lecture non exposée par le player n'est
+  jamais forcée** ; le mode n'est pas un « turbo » de lecture.
 - Le timecode observé est **toujours** `video.currentTime`, jamais une horloge
   murale.
 - Statuts persistants d'item : `pending`, `seeking`, `capturing`, `captured`,
   `skipped`, `unavailable`, `failed`, `cancelled`. La progression, le timecode
   demandé et le timecode capturé sont affichés.
+- En mode seek, le lecteur est mis en pause, les sondes indépendantes sont
+  temporairement détachées, puis le timecode et l'état de lecture initiaux sont
+  restaurés avant leur réactivation.
 
 ### Galeries locales et export
 
@@ -108,11 +113,14 @@ Deux formes d'items :
   n'a été nécessaire.
 - Objet persistant **`GalleryRun`** : id, nom, date, URL/titre, plateforme,
   fixture, stratégie, état (`running`/`completed`/`cancelled`) et compteurs
-  (`planned`, `captured`, `unavailable`, `skipped`, `failed`).
+  (`planned`, `captured`, `unavailable`, `skipped`, `failed`), ainsi que les
+  états détaillés de chaque timecode.
 - **Une exécution crée toujours une nouvelle galerie.** La migration IndexedDB
   v3 → v4 est **non destructive** (test dédié).
 - **Sélecteur de galerie** et **effacement ciblé** d'une galerie **après
-  confirmation** (les autres galeries et les snapshots hors galerie survivent).
+  confirmation**. La galerie d'images est filtrée sur la sélection ; une option
+  permet de revoir toutes les captures. Les autres galeries et snapshots hors
+  galerie survivent.
 - **« Exporter la galerie »** : téléchargements **explicites** des WebP et d'un
   `manifest.json` sous **`Téléchargements/Comment-this-film/<gallery-id>/`**, via
   la permission Chrome **minimale** `downloads`.
@@ -188,8 +196,9 @@ Les tests utilisent Vitest, des **modules purs** et des **faux objets**
 | `tests/plannerFixtures.test.ts` | validité + reproductibilité des deux fixtures (dont 300 captures exactes) | 2 |
 | `tests/platform.test.ts` | détection YouTube / Prime / repli HTML5 | 4 |
 | `tests/export.test.ts` | noms de fichiers triés, chemins, **manifest**, data URL JSON | 5 |
-| `tests/galleryStore.test.ts` | **migration v3 → v4 non destructive**, CRUD galeries, requêtes par galerie, **suppression ciblée**, éligibilité Gemini | 5 |
-| `tests/plannedCaptureRunner.test.ts` | intégration mockée d'un `HTMLVideoElement` : **seek**, **pause** (playback), **annulation**, **timeout de seek borné**, **image indisponible**, image suspecte, `onDone` unique | 9 |
+| `tests/galleryStore.test.ts` | **migration v3 → v4 non destructive**, CRUD galeries, requêtes par galerie, **suppression ciblée**, progression concurrente, éligibilité Gemini | 6 |
+| `tests/gallery.test.ts` | reconstruction autoritaire des compteurs depuis les états finaux | 1 |
+| `tests/plannedCaptureRunner.test.ts` | intégration mockée d'un `HTMLVideoElement` : **seek**, pause/reprise (playback), timecode dépassé, **annulation**, **timeout borné**, **image indisponible**, image suspecte, `onDone` unique | 11 |
 
 ### Résultats des trois commandes obligatoires
 
@@ -197,7 +206,7 @@ Toutes exécutées avec succès (voir la section « Commandes » du README pour 
 procédure exacte) :
 
 - **`pnpm typecheck`** → succès (extension + serveur, `tsc --noEmit`).
-- **`pnpm test`** → **134 tests passés / 134** (90 du Cycle 2 **préservés** + 44
+- **`pnpm test`** → **138 tests passés / 138** (90 du Cycle 2 **préservés** + 48
   ajoutés au Cycle 3). Aucun test existant supprimé ni dégradé.
 - **`pnpm build`** → succès. Le bundle `dist/` se construit ; un test automatisé
   (`tests/noSecrets.test.ts`) vérifie qu'**aucune** référence à `GEMINI_API_KEY`,

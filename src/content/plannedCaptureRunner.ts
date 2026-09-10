@@ -26,29 +26,13 @@ import {
   isSuspectFrame,
 } from '../lib/visual'
 import type { PlannerMode } from '../lib/planner'
+import type { GalleryItemState, GalleryItemStatus } from '../lib/gallery'
 
 /** Statut persistant d'un item du plan (par timecode). */
-export type PlannedItemStatus =
-  | 'pending'
-  | 'seeking'
-  | 'capturing'
-  | 'captured'
-  | 'skipped'
-  | 'unavailable'
-  | 'failed'
-  | 'cancelled'
+export type PlannedItemStatus = GalleryItemStatus
 
 /** État observable d'un item durant l'exécution. */
-export interface PlannedItemState {
-  index: number
-  /** Timecode demandé par le plan (secondes). */
-  requestedTime: number
-  status: PlannedItemStatus
-  /** Timecode réellement capturé (`video.currentTime`), si une image a été prise. */
-  actualTime?: number
-  availability?: VisualAvailability
-  cause?: VisualUnavailableCause
-}
+export interface PlannedItemState extends GalleryItemState {}
 
 /** Résultat d'une capture réussie remontée à l'appelant (pour stockage). */
 export interface PlannedCaptureEvent {
@@ -65,6 +49,7 @@ export interface RunnerVideo {
   currentTime: number
   duration: number
   paused: boolean
+  ended?: boolean
   readyState: number
   addEventListener(type: string, cb: () => void): void
   removeEventListener(type: string, cb: () => void): void
@@ -111,6 +96,9 @@ const DEFAULTS: Required<PlannedRunOptions> = {
   playbackTimeoutMs: 30_000,
 }
 
+/** Tolérance de passage naturel : au-delà, un timecode déjà dépassé est ignoré. */
+const PLAYBACK_TOLERANCE_SECONDS = 0.75
+
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
 }
@@ -123,6 +111,7 @@ function defaultSleep(ms: number): Promise<void> {
 export class PlannedCaptureRunner {
   private cancelled = false
   private running = false
+  private readonly cancelWaiters = new Set<() => void>()
 
   private readonly captureFn: (video: HTMLVideoElement) => CaptureResult
   private readonly sleep: (ms: number) => Promise<void>
@@ -144,6 +133,8 @@ export class PlannedCaptureRunner {
   /** Demande l'annulation coopérative de l'exécution en cours. */
   cancel(): void {
     this.cancelled = true
+    for (const waiter of this.cancelWaiters) waiter()
+    this.cancelWaiters.clear()
   }
 
   /**
@@ -191,6 +182,7 @@ export class PlannedCaptureRunner {
         const result = await this.processItem(video, index, requestedTime, mode, settleMs)
         if (result === 'captured') summary.captured += 1
         else if (result === 'unavailable') summary.unavailable += 1
+        else if (result === 'skipped') summary.skipped += 1
         else if (result === 'failed') summary.failed += 1
         else if (result === 'cancelled') {
           summary.cancelled = true
@@ -360,25 +352,55 @@ export class PlannedCaptureRunner {
    */
   private awaitPlayback(video: RunnerVideo, time: number): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
-      if (video.currentTime >= time) {
+      if (video.currentTime > time + PLAYBACK_TOLERANCE_SECONDS) {
+        resolve(false)
+        return
+      }
+      if (video.currentTime >= time - PLAYBACK_TOLERANCE_SECONDS) {
         resolve(true)
         return
       }
       let settled = false
+      let watchdogGeneration = 0
       const done = (ok: boolean) => {
         if (settled) return
         settled = true
+        watchdogGeneration += 1
         video.removeEventListener('timeupdate', onTick)
         video.removeEventListener('seeked', onTick)
+        video.removeEventListener('play', onPlay)
+        video.removeEventListener('pause', onPause)
+        video.removeEventListener('ended', onEnded)
+        this.cancelWaiters.delete(onCancel)
         resolve(ok)
       }
       const onTick = () => {
         if (this.cancelled) done(false)
-        else if (video.currentTime >= time) done(true)
+        else if (video.currentTime > time + PLAYBACK_TOLERANCE_SECONDS) done(false)
+        else if (video.currentTime >= time - PLAYBACK_TOLERANCE_SECONDS) done(true)
+        else armWatchdog()
+      }
+      const onCancel = () => done(false)
+      const onPause = () => {
+        // Une pause ne consomme jamais le budget d'attente active.
+        watchdogGeneration += 1
+      }
+      const onPlay = () => armWatchdog()
+      const onEnded = () => done(false)
+      const armWatchdog = () => {
+        if (video.paused || settled) return
+        const generation = ++watchdogGeneration
+        void this.sleep(this.opts.playbackTimeoutMs).then(() => {
+          if (!settled && generation === watchdogGeneration) done(false)
+        })
       }
       video.addEventListener('timeupdate', onTick)
       video.addEventListener('seeked', onTick)
-      void this.sleep(this.opts.playbackTimeoutMs).then(() => done(video.currentTime >= time))
+      video.addEventListener('play', onPlay)
+      video.addEventListener('pause', onPause)
+      video.addEventListener('ended', onEnded)
+      this.cancelWaiters.add(onCancel)
+      armWatchdog()
     })
   }
 

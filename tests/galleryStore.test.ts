@@ -153,6 +153,47 @@ describe('galleryStore — migration v3 -> v4 + CRUD (Cycle 3)', () => {
     expect(wrote).toBe(false)
   })
 
+  it('sérialise les progressions concurrentes et recalcule les compteurs sans perte', async () => {
+    const store = await import('../src/lib/snapshotStore')
+    await store.createGalleryRun({
+      ...galleryRun('gA', 3),
+      items: [0, 1, 2].map((requestedTime, index) => ({
+        index,
+        requestedTime,
+        status: 'pending' as const,
+      })),
+    })
+
+    await Promise.all([
+      store.updateGalleryItem('gA', {
+        index: 0,
+        requestedTime: 0,
+        status: 'captured',
+        actualTime: 0.1,
+        availability: 'available',
+      }),
+      store.updateGalleryItem('gA', {
+        index: 1,
+        requestedTime: 1,
+        status: 'captured',
+        actualTime: 1.1,
+        availability: 'available',
+      }),
+      store.updateGalleryItem('gA', {
+        index: 2,
+        requestedTime: 2,
+        status: 'unavailable',
+        availability: 'blocked',
+      }),
+    ])
+
+    const run = await store.getGalleryRun('gA')
+    expect(run?.counters.captured).toBe(2)
+    expect(run?.counters.unavailable).toBe(1)
+    expect(run?.items?.[1].status).toBe('captured')
+    expect(run?.items?.[1].actualTime).toBe(1.1)
+  })
+
   it('getAnalyzableGallerySnapshotIds n’inclut que les images valides non traitées', async () => {
     const store = await import('../src/lib/snapshotStore')
     await store.createGalleryRun(galleryRun('gA'))

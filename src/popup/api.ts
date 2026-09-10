@@ -139,7 +139,7 @@ export async function runPlan(
     pageTitle: params.pageTitle,
     platform: params.platform,
     strategy: params.strategy,
-    planned: params.timecodes.length,
+    timecodes: params.timecodes,
   })
   if (!created.ok || !('galleryId' in created)) return null
   const galleryId = created.galleryId
@@ -153,7 +153,23 @@ export async function runPlan(
   if (!started.ok) {
     // La galerie a été créée mais la vidéo n'est pas disponible : on la finalise
     // comme annulée plutôt que de laisser une galerie « running » fantôme.
-    await sendToBackground({ type: 'FINALIZE_GALLERY_RUN', galleryId, cancelled: true })
+    await sendToBackground({
+      type: 'FINALIZE_GALLERY_RUN',
+      galleryId,
+      cancelled: true,
+      counters: {
+        planned: params.timecodes.length,
+        captured: 0,
+        unavailable: 0,
+        skipped: 0,
+        failed: 0,
+      },
+      items: params.timecodes.map((requestedTime, index) => ({
+        index,
+        requestedTime,
+        status: 'cancelled',
+      })),
+    })
     return null
   }
   return galleryId

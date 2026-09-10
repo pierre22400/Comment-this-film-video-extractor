@@ -9,6 +9,7 @@ import {
 } from './plannedCaptureRunner'
 import type { ContentRequest, ContentResponse, ProbeDefinition, PlanRunState } from '../lib/messages'
 import type { VideoInfo, CaptureState, SnapshotMeta } from '../lib/types'
+import { countersFromItems } from '../lib/gallery'
 import { CaptureError, ERROR_MESSAGES, isCaptureErrorCode } from '../lib/errors'
 import {
   type VisualAvailability,
@@ -153,8 +154,24 @@ declare global {
     currentVideo = v
     if (!v) throw new CaptureError('VIDEO_NOT_FOUND')
 
-    // Annule une exécution précédente éventuelle (une seule à la fois).
-    planRunner?.cancel()
+    if (capturing) {
+      throw new CaptureError(
+        'CAPTURE_ERROR',
+        'Arrêtez la capture périodique avant de lancer le scanner planifié.',
+      )
+    }
+    if (planRunner?.isRunning) {
+      throw new CaptureError('CAPTURE_ERROR', 'Un scanner planifié est déjà en cours.')
+    }
+
+    const initialTime = v.currentTime
+    const wasPaused = v.paused
+    if (mode === 'seek') {
+      // Les seeks du scanner ne doivent jamais résoudre ou manquer une sonde
+      // visuelle indépendante. On la détache jusqu'au retour au timecode initial.
+      probeScheduler.detach()
+      v.pause()
+    }
     planGalleryId = galleryId
     planTotal = timecodes.length
     planSummary = null
@@ -164,6 +181,11 @@ declare global {
     planRunner = new PlannedCaptureRunner({
       onItem(state) {
         planItems[state.index] = state
+        chrome.runtime.sendMessage({
+          type: 'GALLERY_ITEM_STATUS',
+          galleryId,
+          item: state,
+        })
       },
       onCapture(event) {
         const meta: SnapshotMeta = {
@@ -177,7 +199,7 @@ declare global {
           imageFormat: detectImageFormat(event.dataUrl),
           visualAvailability: event.availability,
           visualCause: event.cause,
-          captureOrigin: 'manual',
+          captureOrigin: 'planned',
           galleryId,
           requestedTime: event.requestedTime,
         }
@@ -190,15 +212,48 @@ declare global {
       },
       onDone(summary) {
         planSummary = summary
+        const items = planItems.map((item) => ({ ...item }))
         chrome.runtime.sendMessage({
           type: 'FINALIZE_GALLERY_RUN',
           galleryId,
           cancelled: summary.cancelled,
+          counters: countersFromItems(items),
+          items,
         })
+        if (mode === 'seek') {
+          restoreVideoAfterPlan(v, initialTime, wasPaused)
+        }
       },
     })
 
     void planRunner.run(v, timecodes, mode, settleMs)
+  }
+
+  /**
+   * Replace le lecteur après un scan par seeks, puis réactive les sondes une
+   * fois le seek de retour terminé afin qu'elles n'observent jamais le scan.
+   */
+  function restoreVideoAfterPlan(
+    video: HTMLVideoElement,
+    initialTime: number,
+    wasPaused: boolean,
+  ): void {
+    let restored = false
+    const finish = () => {
+      if (restored) return
+      restored = true
+      video.removeEventListener('seeked', finish)
+      probeScheduler.attach(video)
+      if (!wasPaused) void video.play().catch(() => undefined)
+    }
+    video.addEventListener('seeked', finish)
+    try {
+      video.currentTime = initialTime
+    } catch {
+      finish()
+      return
+    }
+    window.setTimeout(finish, 1500)
   }
 
   function getVideoInfo(v: HTMLVideoElement | null): VideoInfo | null {

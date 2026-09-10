@@ -53,6 +53,7 @@ export function Popup() {
   const [probes, setProbes] = useState<VisualProbeRequest[]>([])
   const [planState, setPlanState] = useState<PlanRunState | null>(null)
   const [galleryRuns, setGalleryRuns] = useState<GalleryRun[]>([])
+  const [selectedGalleryId, setSelectedGalleryId] = useState<string | null>(null)
   const lastCount = useRef(-1)
   const lastSig = useRef('')
 
@@ -127,7 +128,10 @@ export function Popup() {
       const ps = await getPlanState(tab.id)
       if (!cancelled) setPlanState(ps)
       const gr = await listGalleryRuns()
-      if (!cancelled) setGalleryRuns(gr)
+      if (!cancelled) {
+        setGalleryRuns(gr)
+        setSelectedGalleryId(gr[0]?.id ?? null)
+      }
       await reloadGallery()
     })()
     return () => {
@@ -165,7 +169,12 @@ export function Popup() {
 
   const running = state?.running ?? false
   const unanalyzedCount = snapshots.filter(unanalyzed).length
-  const selected = selectedId !== null ? snapshots.find((s) => s.id === selectedId) ?? null : null
+  const visibleSnapshots = selectedGalleryId
+    ? snapshots.filter((snapshot) => snapshot.galleryId === selectedGalleryId)
+    : snapshots
+  const selected = selectedId !== null
+    ? visibleSnapshots.find((s) => s.id === selectedId) ?? null
+    : null
 
   async function handleStart() {
     if (tabId === null) return
@@ -187,6 +196,7 @@ export function Popup() {
   async function handleClear() {
     await clearSnapshots()
     setSelectedId(null)
+    setSelectedGalleryId(null)
     lastSig.current = ''
     await reloadGallery()
     setProbes(await listVisualProbes())
@@ -233,6 +243,7 @@ export function Popup() {
       settleMs: plan.settleMs,
     })
     if (galleryId === null) return false
+    setSelectedGalleryId(galleryId)
     setGalleryRuns(await listGalleryRuns())
     if (info) setPlanState(await getPlanState(tabId))
     return true
@@ -259,7 +270,10 @@ export function Popup() {
 
   async function handleDeleteGallery(galleryId: string) {
     await deleteGalleryRun(galleryId)
-    setGalleryRuns(await listGalleryRuns())
+    const remaining = await listGalleryRuns()
+    setGalleryRuns(remaining)
+    if (selectedGalleryId === galleryId) setSelectedGalleryId(remaining[0]?.id ?? null)
+    setSelectedId(null)
     lastSig.current = ''
     await reloadGallery()
   }
@@ -319,6 +333,11 @@ export function Popup() {
         knownDuration={state?.videoInfo?.duration ?? null}
         planState={planState}
         runs={galleryRuns}
+        selectedGalleryId={selectedGalleryId}
+        onSelectGallery={(galleryId) => {
+          setSelectedGalleryId(galleryId)
+          setSelectedId(null)
+        }}
         onRun={handleRunPlan}
         onCancel={handleCancelPlan}
         onAnalyzeGallery={handleAnalyzeGallery}
@@ -333,7 +352,7 @@ export function Popup() {
         onAnalyzeAll={handleAnalyzeAll}
       />
 
-      <Gallery snapshots={snapshots} urls={urls} onSelect={(s) => setSelectedId(s.id)} />
+      <Gallery snapshots={visibleSnapshots} urls={urls} onSelect={(s) => setSelectedId(s.id)} />
 
       {selected && urls.get(selected.id) && (
         <SnapshotDetail

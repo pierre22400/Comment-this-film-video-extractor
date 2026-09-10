@@ -8,6 +8,7 @@
 // Téléchargements est une action explicite distincte (voir export).
 
 import type { PlannerMode } from './planner'
+import type { VisualAvailability, VisualUnavailableCause } from './visual'
 
 /** Plateforme détectée pour l'onglet capturé (repli HTML5 générique). */
 export type Platform = 'youtube' | 'prime' | 'html5'
@@ -30,6 +31,27 @@ export const PLATFORM_LABELS: Record<Platform, string> = {
 export type GalleryRunState = 'running' | 'completed' | 'cancelled'
 
 export const GALLERY_RUN_STATES: readonly GalleryRunState[] = ['running', 'completed', 'cancelled']
+
+/** Statut persistant d'un timecode du plan. */
+export type GalleryItemStatus =
+  | 'pending'
+  | 'seeking'
+  | 'capturing'
+  | 'captured'
+  | 'skipped'
+  | 'unavailable'
+  | 'failed'
+  | 'cancelled'
+
+/** État persistant d'un timecode planifié dans une galerie. */
+export interface GalleryItemState {
+  index: number
+  requestedTime: number
+  status: GalleryItemStatus
+  actualTime?: number
+  availability?: VisualAvailability
+  cause?: VisualUnavailableCause
+}
 
 /** Compteurs agrégés d'une galerie (mis à jour au fil de l'exécution). */
 export interface GalleryCounters {
@@ -63,11 +85,33 @@ export interface GalleryRun {
   strategy: PlannerMode
   state: GalleryRunState
   counters: GalleryCounters
+  /** États détaillés des timecodes ; absent uniquement pour une ancienne galerie v4. */
+  items?: GalleryItemState[]
   /**
    * Analyse Gemini demandée pour CETTE galerie (désactivée par défaut).
    * Renseigné uniquement quand l'utilisateur active explicitement l'analyse.
    */
   geminiRequestedAt?: string
+}
+
+/**
+ * Recalcule les compteurs autoritaires à partir des états finaux du plan.
+ * Une image suspecte est stockée mais comptée comme indisponible pour Gemini.
+ */
+export function countersFromItems(items: GalleryItemState[]): GalleryCounters {
+  const counters = emptyCounters(items.length)
+  for (const item of items) {
+    if (item.status === 'captured' && (item.availability ?? 'available') === 'available') {
+      counters.captured += 1
+    } else if (item.status === 'unavailable' || item.status === 'captured') {
+      counters.unavailable += 1
+    } else if (item.status === 'skipped') {
+      counters.skipped += 1
+    } else if (item.status === 'failed') {
+      counters.failed += 1
+    }
+  }
+  return counters
 }
 
 /** Total des captures physiquement stockées (exploitables + non exploitables). */

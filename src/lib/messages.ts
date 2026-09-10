@@ -3,6 +3,7 @@ import type { CaptureErrorCode } from './errors'
 import type { ProbePurpose, VisualProbeRequest } from './probe'
 import type { PlannerMode } from './planner'
 import type { GalleryRun, Platform } from './gallery'
+import type { GalleryCounters, GalleryItemState } from './gallery'
 import type { PlannedItemState, PlannedRunSummary } from '../content/plannedCaptureRunner'
 
 /** Définition d'une sonde visuelle, telle que soumise par le popup. */
@@ -91,30 +92,29 @@ export type BackgroundRequest =
       pageTitle: string
       platform: Platform
       strategy: PlannerMode
-      planned: number
+      timecodes: number[]
     }
   | { type: 'GALLERY_SNAPSHOT'; galleryId: string; dataUrl: string; meta: SnapshotMeta }
-  | { type: 'FINALIZE_GALLERY_RUN'; galleryId: string; cancelled: boolean }
+  | { type: 'GALLERY_ITEM_STATUS'; galleryId: string; item: GalleryItemState }
+  | {
+      type: 'FINALIZE_GALLERY_RUN'
+      galleryId: string
+      cancelled: boolean
+      counters: GalleryCounters
+      items: GalleryItemState[]
+    }
   | { type: 'LIST_GALLERY_RUNS' }
   | { type: 'DELETE_GALLERY_RUN'; galleryId: string }
   // Analyse Gemini ACTIVÉE SÉPARÉMENT pour une galerie précise (jamais pour les
   // captures périodiques ordinaires). Seules les images valides sont mises en file.
   | { type: 'ANALYZE_GALLERY'; galleryId: string }
-  // Prépare l'export : renvoie les données WebP + un manifest de la galerie.
+  // Exporte localement les WebP + le manifest de la galerie.
   | { type: 'EXPORT_GALLERY'; galleryId: string }
 
 /** Instantané de l'état de la file d'analyse (diagnostic manuel), exposé au popup. */
 export interface AnalysisStatus {
   queued: number
   analyzing: number
-}
-
-/** Un fichier à télécharger lors de l'export d'une galerie. */
-export interface ExportFile {
-  /** Nom de fichier relatif sous Téléchargements/Comment-this-film/<gallery-id>/. */
-  filename: string
-  /** Data URL (WebP pour les images, JSON encodé pour le manifest). */
-  dataUrl: string
 }
 
 export type BackgroundResponse =
@@ -127,5 +127,4 @@ export type BackgroundResponse =
   | { ok: true; run: GalleryRun }
   | { ok: true; runs: GalleryRun[] }
   | { ok: true; deleted: number }
-  | { ok: true; files: ExportFile[] }
   | { ok: false; message: string }

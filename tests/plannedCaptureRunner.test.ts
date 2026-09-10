@@ -219,9 +219,9 @@ describe('PlannedCaptureRunner — mode playback', () => {
     expect(captures[0].requestedTime).toBe(5)
   })
 
-  it('capture immédiatement si le timecode est déjà atteint (pause dans la fenêtre)', async () => {
+  it('capture immédiatement si la lecture est en pause dans la tolérance du timecode', async () => {
     const video = makeVideo()
-    video.setTime(30)
+    video.setTime(9.6)
     video.paused = true
     const captures: PlannedCaptureEvent[] = []
     const runner = new PlannedCaptureRunner({
@@ -233,6 +233,47 @@ describe('PlannedCaptureRunner — mode playback', () => {
     })
     const summary = await runner.run(video, [10], 'playback', 0)
     expect(summary.captured).toBe(1)
-    expect(captures[0].actualTime).toBe(30)
+    expect(captures[0].actualTime).toBe(9.6)
+  })
+
+  it('ignore un timecode déjà dépassé au lieu de recapturer la frame courante', async () => {
+    const video = makeVideo()
+    video.setTime(30)
+    const captureFn = vi.fn(okCapture)
+    const runner = new PlannedCaptureRunner({
+      onItem: () => {},
+      onCapture: () => {},
+      onDone: () => {},
+      captureFn,
+      sleep: fastSleep,
+    })
+    const summary = await runner.run(video, [10], 'playback', 0)
+    expect(summary.skipped).toBe(1)
+    expect(captureFn).not.toHaveBeenCalled()
+  })
+
+  it('une pause ne consomme pas le délai actif et la reprise atteint le timecode', async () => {
+    const video = makeVideo()
+    video.setTime(0)
+    video.paused = true
+    const captures: PlannedCaptureEvent[] = []
+    const runner = new PlannedCaptureRunner({
+      onItem: () => {},
+      onCapture: (event) => captures.push(event),
+      onDone: () => {},
+      captureFn: vi.fn(okCapture),
+      sleep: fastSleep,
+    })
+
+    const pending = runner.run(video, [5], 'playback', 0)
+    await Promise.resolve()
+    video.paused = false
+    video.fire('play')
+    video.setTime(5)
+    video.fire('timeupdate')
+
+    const summary = await pending
+    expect(summary.captured).toBe(1)
+    expect(captures[0].actualTime).toBe(5)
   })
 })

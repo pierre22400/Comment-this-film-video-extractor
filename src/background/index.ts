@@ -20,8 +20,9 @@ import {
   deleteGalleryRun,
   getSnapshotsByGallery,
   getAnalyzableGallerySnapshotIds,
+  updateGalleryItem,
 } from '../lib/snapshotStore'
-import type { BackgroundRequest, BackgroundResponse, AnalysisStatus, ExportFile } from '../lib/messages'
+import type { BackgroundRequest, BackgroundResponse, AnalysisStatus } from '../lib/messages'
 import type { Snapshot } from '../lib/types'
 import { emptyCounters, type GalleryRun } from '../lib/gallery'
 import { buildGalleryManifest, exportPath, imageFilename, jsonToDataUrl } from '../lib/export'
@@ -476,7 +477,12 @@ chrome.runtime.onMessage.addListener(
               fixtureName: msg.fixtureName,
               strategy: msg.strategy,
               state: 'running',
-              counters: emptyCounters(msg.planned),
+              counters: emptyCounters(msg.timecodes.length),
+              items: msg.timecodes.map((requestedTime, index) => ({
+                index,
+                requestedTime,
+                status: 'pending',
+              })),
             }
             await createGalleryRun(run)
             sendResponse({ ok: true, galleryId: id })
@@ -504,7 +510,7 @@ chrome.runtime.onMessage.addListener(
               analysisState: analyzable ? 'not_requested' : 'not_applicable',
               visualAvailability: msg.meta.visualAvailability,
               visualCause: msg.meta.visualCause,
-              captureOrigin: 'manual',
+              captureOrigin: 'planned',
               galleryId: msg.galleryId,
               requestedTime: msg.meta.requestedTime,
               analysisErrorMessage: analyzable
@@ -513,19 +519,19 @@ chrome.runtime.onMessage.addListener(
             }
             const snapshotId = await addSnapshot(snapshot)
             // Mise à jour des compteurs de la galerie.
-            const run = await getGalleryRun(msg.galleryId)
-            if (run) {
-              const counters = { ...run.counters }
-              if (analyzable) counters.captured += 1
-              else counters.unavailable += 1
-              await updateGalleryRun(msg.galleryId, { counters })
-            }
             sendResponse({ ok: true, id: snapshotId })
+            break
+          }
+          case 'GALLERY_ITEM_STATUS': {
+            await updateGalleryItem(msg.galleryId, msg.item)
+            sendResponse({ ok: true })
             break
           }
           case 'FINALIZE_GALLERY_RUN': {
             await updateGalleryRun(msg.galleryId, {
               state: msg.cancelled ? 'cancelled' : 'completed',
+              counters: msg.counters,
+              items: msg.items,
             })
             sendResponse({ ok: true })
             break
@@ -561,7 +567,7 @@ chrome.runtime.onMessage.addListener(
             }
             const snaps = await getSnapshotsByGallery(msg.galleryId)
             const ordered = [...snaps].sort((a, b) => a.id - b.id)
-            const files: ExportFile[] = []
+            const files: { filename: string; dataUrl: string }[] = []
             for (let i = 0; i < ordered.length; i += 1) {
               const s = ordered[i]
               files.push({
@@ -576,7 +582,7 @@ chrome.runtime.onMessage.addListener(
             // Permission minimale `downloads`. Aucune écriture silencieuse hors
             // du dossier Téléchargements n'est possible (limite documentée).
             await downloadGalleryFiles(msg.galleryId, files)
-            sendResponse({ ok: true, files })
+            sendResponse({ ok: true })
             break
           }
 
