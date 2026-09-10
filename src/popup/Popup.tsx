@@ -285,9 +285,9 @@ export function Popup() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>SceneVibe Visual Scanner</h1>
+        <h1>Comment-this-film</h1>
         <span className="cycle">
-          POC 0.3.0 · captures YouTube et Prime · galeries locales
+          Cycle 3 · capture locale + sondes ciblées + scanner visuel planifié (relais local)
         </span>
       </header>
 
