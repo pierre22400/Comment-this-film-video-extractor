@@ -1,14 +1,20 @@
 import type { Snapshot } from '../../lib/types'
 import { formatTimecode, formatDateTime } from '../../lib/timecode'
+import { analysisStateView, analysisErrorText, notApplicableText } from '../analysisLabels'
 
 interface Props {
   snapshot: Snapshot
   url: string
   onClose: () => void
+  onRetry: (id: number) => void
 }
 
-export function SnapshotDetail({ snapshot, url, onClose }: Props) {
+export function SnapshotDetail({ snapshot, url, onClose, onRetry }: Props) {
   const idLabel = String(snapshot.id).padStart(3, '0')
+  const view = analysisStateView(snapshot)
+  const errorText = analysisErrorText(snapshot)
+  const naText = notApplicableText(snapshot)
+  const state = snapshot.analysisState ?? 'not_requested'
 
   function download() {
     const ext = snapshot.mimeType.includes('png') ? 'png' : 'webp'
@@ -38,6 +44,37 @@ export function SnapshotDetail({ snapshot, url, onClose }: Props) {
 
         <img className="modal-img" src={url} alt={`Snapshot #${idLabel} agrandi`} />
 
+        <div className="analysis-block">
+          <div className="analysis-head">
+            <span className="panel-title" style={{ margin: 0 }}>
+              Description Gemini
+            </span>
+            <span className={`chip chip-${view.kind}`}>{view.text}</span>
+          </div>
+
+          {snapshot.description ? (
+            <p className="analysis-desc">{snapshot.description}</p>
+          ) : state === 'analyzing' || state === 'queued' ? (
+            <p className="analysis-desc muted-text">Analyse en cours…</p>
+          ) : state === 'not_applicable' ? (
+            <p className="analysis-na">{naText}</p>
+          ) : errorText ? (
+            <p className="analysis-error">{errorText}</p>
+          ) : (
+            <p className="analysis-desc muted-text">Pas encore de description.</p>
+          )}
+
+          {state === 'failed' && (
+            <button
+              type="button"
+              className="btn btn-block"
+              onClick={() => onRetry(snapshot.id)}
+            >
+              Réessayer
+            </button>
+          )}
+        </div>
+
         <dl className="kv kv-detail">
           <div>
             <dt>Timecode vidéo</dt>
@@ -61,6 +98,26 @@ export function SnapshotDetail({ snapshot, url, onClose }: Props) {
             <dt>Format</dt>
             <dd>{snapshot.mimeType}</dd>
           </div>
+          {snapshot.captureOrigin === 'visual_probe' && (
+            <div>
+              <dt>Origine</dt>
+              <dd>Sonde visuelle ciblée</dd>
+            </div>
+          )}
+          {snapshot.analysisModel && (
+            <div>
+              <dt>Modèle</dt>
+              <dd className="truncate" title={snapshot.analysisModel}>
+                {snapshot.analysisModel}
+              </dd>
+            </div>
+          )}
+          {snapshot.analysisLatencyMs != null && (
+            <div>
+              <dt>Latence</dt>
+              <dd>{snapshot.analysisLatencyMs} ms</dd>
+            </div>
+          )}
           <div className="kv-wide">
             <dt>Page</dt>
             <dd className="truncate" title={snapshot.pageTitle}>

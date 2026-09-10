@@ -1,15 +1,166 @@
-# Comment-this-film — Cycle 1
+# Comment-this-film — Cycle 2
 
-Extension Google Chrome (Manifest V3) dont l'unique fonction est de **capturer
-périodiquement des images d'une vidéo HTML5** en cours de lecture dans l'onglet
-actif, puis de les stocker localement et de les présenter dans une galerie.
+Extension Google Chrome (Manifest V3) qui **capture périodiquement des images
+d'une vidéo HTML5** dans l'onglet actif, les stocke localement, puis — sur
+activation explicite — envoie chaque image à **Gemini** (via un relais serveur
+local) pour obtenir une **description visuelle courte et factuelle**.
 
-> **Ce prototype ne contient aucune intelligence artificielle.**
-> Pas de Gemini, LLM, OCR, sous-titres, recherche Internet, reconnaissance
-> d'image, identification de film, base de données distante ni backend.
+> **Limite stricte du Cycle 2 :** Gemini décrit UNIQUEMENT ce qui est
+> directement visible dans une image isolée. Il n'y a encore **aucune**
+> identification de film/série/personne, aucune analyse de plusieurs images
+> ensemble, aucune lecture de sous-titres, aucune recherche Internet, aucune
+> vérification de faits, aucune anecdote, aucun commentaire ni interprétation
+> narrative. Ces capacités appartiennent à des cycles ultérieurs.
 
-Objectif du Cycle 1 : valider la chaîne
-**HTMLVideoElement → `currentTime` → capture Canvas → snapshot WebP → stockage → galerie.**
+Le Cycle 1 (chaîne **HTMLVideoElement → `currentTime` → capture Canvas → snapshot
+WebP → stockage → galerie**) reste pleinement fonctionnel et n'a pas été dégradé.
+
+---
+
+## Amendement — le snapshot devient une source facultative
+
+Un amendement limité rend le snapshot **facultatif** plutôt qu'un prérequis
+permanent : lorsqu'une image est indisponible (raison technique ou
+d'autorisation), la session **continue proprement** sans jamais envoyer d'image
+invalide à Gemini. Cet amendement **ne construit pas encore** le moteur complet
+sans image ; il fournit le vocabulaire structuré et les garde-fous que les
+cycles suivants réutiliseront. La file Gemini, le relais local, l'interface et
+les tests du Cycle 2 sont préservés.
+
+### Contrat de disponibilité visuelle (`src/lib/visual.ts`, module pur)
+
+- `VisualAvailability` : `available · unavailable · blocked · suspected_invalid · temporary_error`.
+- `VisualUnavailableCause` : `canvas_security · capture_blocked · permission_denied · image_empty · image_undecodable · suspected_blank_frame · temporary_capture_error · unsupported`.
+- `VisualIncident` : disponibilité, dernier code, message lisible, timecode, date.
+- `TimecodeObservation` : `{ mediaTime, snapshotId: number | null, visualAvailability, visualDescription: string | null }` — snapshot **facultatif**, pour les cycles suivants.
+
+> Formulation prudente : on n'affirme **jamais** qu'une DRM est responsable si le
+> navigateur ne le confirme pas. Un blocage est décrit « capture bloquée ou
+> inaccessible ».
+
+### Analyse : nouvel état `not_applicable`
+
+Une image absente, vide, indécodable, bloquée ou suspecte n'est **jamais**
+envoyée au relais Gemini. Dans ce cas : **aucun retry**, **aucun échec global**,
+état `not_applicable`, cause visuelle conservée, message clair dans l'interface,
+et **poursuite normale** de la session. Le chemin d'une image valide est
+**inchangé**.
+
+### Captures suspectes et garde de session
+
+Une frame presque noire ou uniforme est marquée `suspected_invalid` : elle est
+ignorée pour Gemini, son timecode est conservé, et **les captures suivantes
+continuent**. Une seule frame sombre ne condamne jamais la session : seule une
+série de **blocages consécutifs** (par défaut 3) finit par suspendre, pour
+éviter une boucle d'échecs. Les erreurs Canvas / de permission produisent
+désormais un **état structuré** (affiché dans le panneau d'état) au lieu de
+rester uniquement dans les logs.
+
+### Interface
+
+Le message d'image indisponible est **distinct** d'une erreur Gemini :
+« Image indisponible — la session continue sans analyse visuelle », avec la
+cause technique lorsqu'elle est connue. `not_applicable` n'est jamais présenté
+comme un échec de Gemini (puce neutre, non rouge).
+
+---
+
+## Amendement (révision) — sonde visuelle ciblée et programmable
+
+Une seconde révision ajoute une capacité **précise et bornée**, distincte de la
+capture périodique : une **sonde visuelle** — « regarde entre `t1` et `t2`, dans
+un but donné, et réponds à cette question précise » — créée **explicitement**
+par l'utilisateur, jamais déclenchée par une capture automatique.
+
+### Ce qui change
+
+- **Plus aucun appel Gemini automatique lié à la capture périodique.** L'ancienne
+  bascule « Analyse Gemini activée/désactivée » (qui décrivait chaque nouveau
+  snapshot périodique) est **retirée**. Le panneau **Diagnostic manuel** ne
+  conserve que des actions explicites (analyser les captures non analysées en un
+  clic, réessayer un snapshot en échec) — jamais lié à la capture périodique.
+- **Nouvelle sonde visuelle ciblée**, pilotée par le **timecode réel** de la
+  vidéo (`timeupdate`/`seeked`/`pause`, jamais un minuteur mural indépendant) :
+  gère nativement la pause/reprise, le seek en avant (fenêtre sautée = manquée,
+  jamais de boucle) et le seek en arrière (idempotence stricte — une sonde déjà
+  résolue ne capture jamais deux fois).
+- **Nouveau modèle par défaut : `gemini-3.6-flash`** (`DEFAULT_GEMINI_MODEL`,
+  surchargeable via `GEMINI_MODEL`). Le fournisseur reste inchangé : appel REST
+  direct à `generativelanguage.googleapis.com/v1beta`, clé dans l'en-tête
+  `x-goog-api-key` — aucun SDK propriétaire, aucun endpoint déprécié.
+
+### Cycle de vie d'une sonde
+
+```
+scheduled → waiting → capturing → captured → analyzing → succeeded
+                                        ↘ unavailable (image jamais exploitable)
+                     ↘ missed (fenêtre dépassée sans la moindre tentative)
+scheduled/waiting → cancelled (annulation explicite)
+```
+
+- **Capture** (`src/content/visualProbeScheduler.ts`) : une image presque
+  noire/uniforme est conservée (`suspected_invalid`) mais **jamais** envoyée à
+  Gemini ; une capture bloquée/en erreur répétée jusqu'à épuisement du budget
+  (`maxCaptures`, 1 à 3) devient `unavailable` **sans aucune image stockée**.
+  Une erreur sur une sonde n'affecte jamais les autres sondes actives.
+- **Analyse** (`src/background/visualProbeQueue.ts`, file **séparée** de celle du
+  diagnostic manuel) : ne reçoit QUE des sondes `captured` avec une image
+  `available` ; retries bornés uniquement sur erreurs transitoires ; une réponse
+  tardive après suppression (changement d'epoch) ne ressuscite rien.
+- **Relais** (`POST /api/visual-probe`, nouvel endpoint **distinct** de
+  `/api/describe`) : prompt strict en anglais (ne décrire que le visible, ne
+  jamais inventer une marque/un modèle non certain, ne jamais identifier le
+  film/la série/une personne réelle, ne jamais raconter d'intrigue) ; réponse
+  structurée `{ answer, observations[], confidence, limitations[] }` **validée
+  avant tout stockage** — une réponse vide, mal typée ou hors bornes devient une
+  erreur, jamais un succès stocké.
+
+### Interface
+
+Nouveau panneau **Sondes visuelles** : création (fenêtre, intention, question),
+liste avec statut et réponse, annulation d'une sonde non encore résolue, et un
+raccourci démo (« sonde dans 10 s »). Panneau **Diagnostic manuel** distinct,
+sans bascule automatique.
+
+> Cette révision ne construit pas un moteur de sondes illimité : une image par
+> sonde (au plus `maxCaptures` tentatives), aucune identification d'œuvre/de
+> personne, aucun raisonnement inter-images, aucune recherche Internet. Ce sont
+> les mêmes limites strictes que le Cycle 2 initial, simplement appliquées au
+> nouveau contrat structuré.
+
+---
+
+## Nouveautés du Cycle 2
+
+Pipeline d'analyse, **indépendant de la capture** :
+
+```
+snapshot WebP
+→ file d'attente (service worker)
+→ relais serveur local (127.0.0.1:8787)
+→ Gemini multimodal
+→ réponse JSON validée
+→ description stockée dans IndexedDB
+→ affichage dans la galerie
+```
+
+Une analyse lente ou en échec **ne bloque jamais** la capture des snapshots
+suivants. Aucune analyse n'est automatique : le **diagnostic manuel** (analyser
+les captures non analysées, réessayer un échec) et les **sondes visuelles
+ciblées** (voir la section d'amendement ci-dessus) sont les deux seuls chemins
+qui appellent Gemini, tous deux déclenchés explicitement par l'utilisateur.
+
+### Données envoyées à Gemini
+
+Pour chaque snapshot, le relais transmet **uniquement** :
+
+- l'image (base64) et son type MIME ;
+- l'identifiant technique du snapshot ;
+- le timecode (`mediaTime`).
+
+Ne sont **jamais** transmis : le titre de la page, l'URL, l'historique, ni les
+autres captures. Le prompt interdit explicitement d'identifier une œuvre ou une
+personne et d'inventer un nom propre.
 
 ---
 
@@ -60,22 +211,147 @@ src/
 
 ---
 
+## Architecture (ajouts Cycle 2)
+
+```
+server/                     Relais serveur local (SÉPARÉ de l'extension)
+  config.ts                 Lecture env : GEMINI_API_KEY, GEMINI_MODEL, host/port, CORS
+  cors.ts                   Politique CORS PURE (origine autorisée, jamais de joker)
+  geminiClient.ts           Client Gemini multimodal (describe() + probe() ; interface + implémentation)
+  describeHandler.ts        Handler PUR /api/describe (diagnostic manuel)
+  visualProbeHandler.ts     Handler PUR /api/visual-probe (sonde visuelle, réponse structurée validée)
+  index.ts                  Serveur HTTP Node (127.0.0.1), CORS, timeouts, logs sans image
+  tsconfig.json
+
+src/lib/
+  analysis.ts               Types + validation + classification retry PARTAGÉS (diagnostic manuel)
+  visual.ts                 Contrat de disponibilité visuelle (image facultative)
+  probe.ts                  Contrat de la sonde visuelle : types, validation requête/réponse
+  types.ts                  Snapshot étendu (captureOrigin/probeId optionnels) + AnalysisPatch
+  snapshotStore.ts          Migration IndexedDB v1→v2→v3 (NON destructive) + CRUD sondes
+  messages.ts               Messages popup <-> content script <-> service worker
+
+src/background/
+  analysisQueue.ts          File PURE du diagnostic manuel (concurrence 1, retries, epoch)
+  visualProbeQueue.ts       File PURE des sondes visuelles (séparée, même design éprouvé)
+  index.ts                  Câblage : blob→base64, appels relais, CRUD sondes, récupération
+
+src/content/
+  visualProbeScheduler.ts   Sonde visuelle : capture pilotée par le timecode réel de la vidéo
+
+src/popup/
+  analysisLabels.ts         Libellés/états du diagnostic manuel
+  probeLabels.ts            Libellés FR des sondes visuelles (statuts, intentions)
+  components/DiagnosticPanel.tsx    Actions explicites uniquement (jamais de bascule automatique)
+  components/VisualProbePanel.tsx  Création/liste/annulation de sondes + raccourci démo
+  (Gallery / SnapshotDetail mis à jour : origine de capture, description, erreur, réessai)
+
+tests/                      Tests Vitest (faux client Gemini, aucun appel payant)
+```
+
+**Sécurité de la clé :** la clé Gemini n'existe QUE côté serveur. Elle n'est
+jamais dans le dépôt, ni dans le code de l'extension, ni dans le bundle `dist/`,
+ni dans IndexedDB, ni dans l'interface, ni dans les logs. Un test automatisé
+vérifie qu'aucune référence à `GEMINI_API_KEY` n'existe dans `src/`.
+
+---
+
 ## Installation & compilation
 
 Prérequis : Node 18+ et `pnpm`.
 
 ```bash
-pnpm install     # installe les dépendances
-pnpm build       # vérifie les types (tsc) puis construit dans dist/
+pnpm install         # installe les dépendances
+pnpm typecheck       # vérifie les types (extension + serveur)
+pnpm test            # tests Vitest (faux Gemini, aucun appel réseau)
+pnpm build           # tsc --noEmit puis build de l'extension dans dist/
 ```
 
 Pour le développement avec rechargement :
 
 ```bash
-pnpm dev         # sert dist/ avec HMR pour le popup
+pnpm dev             # sert dist/ avec HMR pour le popup
 ```
 
 Le dossier chargeable dans Chrome est **`dist/`**.
+
+---
+
+## Configuration & lancement du relais Gemini
+
+Le relais est **séparé** de l'extension et lit la clé côté serveur uniquement.
+
+```bash
+cp .env.example .env      # puis renseigner GEMINI_API_KEY et ALLOWED_EXTENSION_ORIGIN
+pnpm server               # démarre le relais sur http://127.0.0.1:8787
+# ou, avec rechargement :
+pnpm server:watch
+```
+
+`pnpm server` et `pnpm server:watch` **chargent réellement le fichier `.env`**
+au démarrage (parseur intégré, aucune dépendance ajoutée). Toute variable déjà
+définie dans l'environnement **reste prioritaire** sur le fichier `.env` ; la clé
+n'est jamais journalisée.
+
+### Variables d'environnement (fichier `.env`, jamais committé)
+
+| Variable                   | Rôle                                                             | Défaut              |
+|----------------------------|------------------------------------------------------------------|---------------------|
+| `GEMINI_API_KEY`           | Clé d'API Google Gemini (**obligatoire**)                        | —                   |
+| `GEMINI_MODEL`             | Modèle Gemini Flash multimodal (optionnel)                       | `gemini-3.6-flash`  |
+| `RELAY_HOST`               | Interface d'écoute (locale par défaut)                           | `127.0.0.1`         |
+| `RELAY_PORT`               | Port d'écoute                                                    | `8787`              |
+| `ALLOWED_EXTENSION_ORIGIN` | Origine d'extension autorisée (CORS), ex : `chrome-extension://<ID>` | — (voir ci-dessous) |
+
+Seul `.env.example` (sans vraie clé) est suivi par Git ; tous les autres `.env*`
+sont ignorés.
+
+### Restriction d'accès au relais (CORS)
+
+Le relais **n'utilise plus** `Access-Control-Allow-Origin: *`. Il autorise
+**uniquement** l'origine configurée dans `ALLOWED_EXTENSION_ORIGIN` :
+
+- origine autorisée → acceptée, avec un `Access-Control-Allow-Origin` **exact** (jamais de joker) ;
+- toute autre origine de navigateur → **refusée** (`403 ORIGIN_NOT_ALLOWED`), préflight `OPTIONS` compris ;
+- l'en-tête `Vary: Origin` est toujours renvoyé ;
+- l'écoute reste **locale** (`127.0.0.1`) par défaut ;
+- un appel **sans origine** (curl, tests serveur, outils non-navigateur) reste **permis**, ce qui conserve un moyen sûr de tester le serveur sans navigateur ;
+- si `ALLOWED_EXTENSION_ORIGIN` n'est pas défini, **aucune** origine de navigateur n'est acceptée (posture stricte).
+
+#### Récupérer l'identifiant d'extension (`chrome://extensions`)
+
+1. Ouvrir `chrome://extensions`.
+2. Activer le **Mode développeur** (coin supérieur droit).
+3. **Charger l'extension non empaquetée** → sélectionner le dossier `dist/`.
+4. Sous le nom de l'extension, repérer l'**ID** (ex : `abcdefghijklmnopabcdefghijklmnop`).
+5. Renseigner dans `.env` : `ALLOWED_EXTENSION_ORIGIN=chrome-extension://<ID>`.
+6. Redémarrer `pnpm server` pour prendre en compte la valeur.
+
+### Contrat de l'endpoint `POST /api/describe`
+
+Entrée : `{ snapshotId, mediaTime, mimeType, imageBase64 }`.
+Succès : `{ snapshotId, description, model, latencyMs }`.
+Erreur : `{ error: { code, message, retryable } }`.
+
+Le relais valide strictement la méthode, le type MIME, la présence/taille de
+l'image, l'identifiant, le timecode (fini et positif) et la taille de requête.
+La réponse du modèle est **validée avant d'être renvoyée** : une réponse vide ou
+mal formée devient une erreur (jamais une description stockée).
+
+### Contrat de l'endpoint `POST /api/visual-probe`
+
+Distinct de `/api/describe` (diagnostic manuel, description libre) : répond à
+une **question ciblée** avec une réponse **structurée**, jamais stockée si invalide.
+
+Entrée : `{ probeId, snapshotId, mediaTime, mimeType, imageBase64, purpose, question }`.
+Succès : `{ probeId, snapshotId, mediaTime, purpose, question, answer, observations[], confidence, limitations[], model, latencyMs }`.
+Erreur : `{ error: { code, message, retryable } }` (même contrat que `/api/describe`).
+
+La réponse structurée est validée avant tout stockage : `answer` doit être une
+chaîne non vide, `confidence` est bornée dans `[0, 1]`, `observations` et
+`limitations` sont des tableaux de chaînes (éventuellement vides). Une réponse
+vide, mal typée ou hors bornes devient une erreur `INVALID_MODEL_RESPONSE`,
+jamais un succès stocké.
 
 ---
 
@@ -104,6 +380,27 @@ Le dossier chargeable dans Chrome est **`dist/`**.
 12. Avancer/reculer dans la timeline → le nouveau `currentTime` est utilisé.
 13. Cliquer une miniature → image agrandie + métadonnées + **Télécharger cette image**.
 
+### Test manuel de l'analyse Gemini (Cycle 2)
+
+> Nécessite une **vraie clé** `GEMINI_API_KEY` dans `.env`.
+
+1. Démarrer le relais : `cp .env.example .env`, renseigner la clé, puis `pnpm server`.
+2. `pnpm build` puis recharger l'extension dans `chrome://extensions`.
+3. Ouvrir une vidéo HTML5 non protégée et lancer la lecture.
+4. Dans le popup, activer **Analyse Gemini** (désactivée par défaut).
+5. Capturer **trois** snapshots espacés de **10 secondes**.
+6. Vérifier que les trois descriptions apparaissent (état « Décrit »).
+7. Vérifier que chaque description correspond **uniquement** à son image.
+8. Simuler une panne : arrêter le relais (ou pointer un port fermé) → les
+   snapshots passent en **Erreur**.
+9. Confirmer que la **capture continue** malgré les erreurs d'analyse.
+10. Confirmer que les erreurs restent visibles et que **Réessayer** relance
+    l'analyse une fois le relais redémarré.
+
+> Note : ce dépôt ne prétend pas avoir exécuté le test Gemini réel — aucune clé
+> valide n'est fournie ici. Les tests automatisés (`pnpm test`) utilisent un
+> **faux client Gemini** et n'effectuent aucun appel payant.
+
 ---
 
 ## Permissions Chrome utilisées
@@ -111,10 +408,14 @@ Le dossier chargeable dans Chrome est **`dist/`**.
 | Permission  | Pourquoi |
 |-------------|----------|
 | `activeTab` | Accès **temporaire** à l'onglet courant, accordé uniquement quand l'utilisateur ouvre le popup. Évite une permission large de type `<all_urls>`. |
-| `scripting` | Injecter programmatiquement le content script de capture dans l'onglet actif. |
+| `scripting` | Injecter programmatiquement le content script de capture (et de sonde visuelle) dans l'onglet actif. |
 
-Le stockage utilise **IndexedDB**, qui ne nécessite aucune permission. Aucune
-permission d'hôte large n'est déclarée.
+`host_permissions` : **uniquement** `http://127.0.0.1:8787/*` (le relais local,
+pour `/api/describe` **et** `/api/visual-probe`), jamais une permission d'hôte
+large. Le stockage des snapshots et des sondes visuelles utilise **IndexedDB**,
+qui ne nécessite aucune permission. La permission `storage` n'est plus
+nécessaire depuis le retrait de la bascule d'analyse automatique (diagnostic
+manuel = actions explicites uniquement).
 
 ---
 
@@ -161,9 +462,27 @@ Disney+, Apple TV+, etc. seront étudiés dans un cycle ultérieur).
 
 Les erreurs sont toujours gérées : l'extension ne plante pas.
 
+### Comportement en cas d'erreur d'analyse (Cycle 2)
+
+La file distingue les erreurs **transitoires** (retentées) des erreurs
+**permanentes** (non retentées) :
+
+| Situation | `retryable` | Politique |
+|-----------|-------------|-----------|
+| Timeout (~20 s), réseau, `408`, `429`, `5xx` | oui | jusqu'à **1 tentative + 2 retries**, backoff exponentiel court avec jitter |
+| `400`, `401`, `403`, réponse invalide | non | échec immédiat, visible dans l'interface, **Réessayer** manuel possible |
+| Relais absent / non configuré (`SERVER_NOT_CONFIGURED`) | non | message clair ; **la capture locale n'est pas affectée** |
+
+Concurrence : **un seul** appel Gemini actif à la fois. Les travaux `queued`
+sont **repris** après le réveil du service worker. « Effacer les captures »
+annule les travaux en attente ; une réponse tardive ne peut pas ressusciter un
+snapshot effacé (garde par génération/epoch).
+
 ---
 
-## Limitations connues (Cycle 1)
+## Limitations connues
+
+**Cycle 1 (capture) :**
 
 - Fonctionne uniquement sur les vidéos HTML5 non protégées.
 - Les contenus DRM ne sont pas capturables (par conception).
@@ -172,10 +491,22 @@ Les erreurs sont toujours gérées : l'extension ne plante pas.
 - L'interface popup ne fonctionne que chargée comme extension (les API `chrome.*`
   sont absentes d'un simple onglet de navigateur).
 
+**Cycle 2 (analyse) :**
+
+- L'analyse nécessite le **relais local démarré** avec une clé Gemini valide.
+- Gemini décrit **une image isolée** : pas d'identification d'œuvre/personne, pas
+  de mise en relation de plusieurs images, pas de sous-titres, pas de recherche.
+- La qualité et la latence dépendent du modèle et de l'API Gemini.
+
 ---
 
-## Préparation du Cycle 2
+## Ce que le Cycle 2 ne fait PAS (rappel explicite)
 
-Le type `Snapshot` prévoit déjà un champ optionnel `description?: string`,
-**jamais renseigné au Cycle 1**. Il servira ultérieurement à recevoir la
-description générée par Gemini.
+Il n'existe **encore aucune** recherche Internet, **aucun** caption enrichi
+(identification de film/série/épisode/personne), **aucune** génération de
+commentaire, d'anecdote, d'opinion ou d'interprétation narrative, et **aucune**
+mise en relation de plusieurs snapshots. Le Cycle 2 se limite strictement à la
+description visuelle factuelle d'images isolées. Ces capacités relèvent de cycles
+ultérieurs.
+
+Le rapport factuel de ce cycle se trouve dans **`CYCLE2_REPORT.md`**.

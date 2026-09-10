@@ -12,11 +12,14 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files
+# env files (le seul .env suivi est l'exemple, sans vraie clé)
 .env*
+!.env.example
 
 # typescript
 *.tsbuildinfo
 
 # vite / editor
 .DS_Store
+vite.config.ts.timestamp-*
+vite.config.*.timestamp-*

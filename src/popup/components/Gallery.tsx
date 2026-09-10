@@ -1,5 +1,6 @@
 import type { Snapshot } from '../../lib/types'
 import { formatTimecode } from '../../lib/timecode'
+import { analysisStateView, notApplicableText } from '../analysisLabels'
 
 interface Props {
   snapshots: Snapshot[]
@@ -24,24 +25,41 @@ export function Gallery({ snapshots, urls, onSelect }: Props) {
     <section className="panel">
       <div className="panel-title">Galerie · {snapshots.length}</div>
       <ul className="gallery">
-        {ordered.map((s) => (
-          <li key={s.id}>
-            <button type="button" className="thumb" onClick={() => onSelect(s)}>
-              <img
-                src={urls.get(s.id)}
-                alt={`Snapshot #${String(s.id).padStart(3, '0')} au timecode ${formatTimecode(s.mediaTime)}`}
-                loading="lazy"
-              />
-              <span className="thumb-meta">
-                <span className="thumb-id">#{String(s.id).padStart(3, '0')}</span>
-                <span className="mono">{formatTimecode(s.mediaTime)}</span>
-                <span className="thumb-dim">
-                  {s.videoWidth} × {s.videoHeight}
+        {ordered.map((s) => {
+          const view = analysisStateView(s)
+          return (
+            <li key={s.id}>
+              <button type="button" className="thumb" onClick={() => onSelect(s)}>
+                <img
+                  src={urls.get(s.id)}
+                  alt={`Snapshot #${String(s.id).padStart(3, '0')} au timecode ${formatTimecode(s.mediaTime)}`}
+                  loading="lazy"
+                />
+                <span className="thumb-meta">
+                  <span className="thumb-line">
+                    <span className="thumb-id">#{String(s.id).padStart(3, '0')}</span>
+                    {s.captureOrigin === 'visual_probe' && (
+                      <span className="chip chip-idle" title="Issu d’une sonde visuelle">
+                        Sonde
+                      </span>
+                    )}
+                    <span className={`chip chip-${view.kind}`}>{view.text}</span>
+                  </span>
+                  <span className="mono">{formatTimecode(s.mediaTime)}</span>
+                  {s.description ? (
+                    <span className="thumb-desc">{s.description}</span>
+                  ) : s.analysisState === 'not_applicable' ? (
+                    <span className="thumb-na">{notApplicableText(s)}</span>
+                  ) : (
+                    <span className="thumb-dim">
+                      {s.videoWidth} × {s.videoHeight}
+                    </span>
+                  )}
                 </span>
-              </span>
-            </button>
-          </li>
-        ))}
+              </button>
+            </li>
+          )
+        })}
       </ul>
     </section>
   )

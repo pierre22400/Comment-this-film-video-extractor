@@ -6,6 +6,24 @@ interface Props {
   detectError: string | null
 }
 
+/** Notice d'incident visuel de capture (bloquée/suspecte), distincte d'une erreur Gemini. */
+function VisualIncidentNotice({ state }: { state: CaptureState | null }) {
+  const incident = state?.lastVisualIncident
+  if (!incident) return null
+  return (
+    <div className="visual-incident" role="status">
+      <span className="visual-incident-title">Image indisponible</span>
+      <span className="visual-incident-msg">
+        {incident.message} La session continue sans analyse visuelle.
+      </span>
+      <span className="visual-incident-meta mono">
+        {formatTimecode(incident.mediaTime)}
+        {incident.code ? ` · ${incident.code}` : ''}
+      </span>
+    </div>
+  )
+}
+
 export function StatusPanel({ state, detectError }: Props) {
   if (detectError) {
     return (
@@ -21,6 +39,7 @@ export function StatusPanel({ state, detectError }: Props) {
     return (
       <section className="panel status">
         <div className="status-line">Recherche d'une vidéo…</div>
+        <VisualIncidentNotice state={state} />
       </section>
     )
   }
@@ -70,6 +89,8 @@ export function StatusPanel({ state, detectError }: Props) {
           </>
         )}
       </dl>
+
+      <VisualIncidentNotice state={state} />
     </section>
   )
 }
