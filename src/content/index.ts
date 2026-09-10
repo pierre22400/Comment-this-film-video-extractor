@@ -1,5 +1,5 @@
 import { findBestVideo } from './videoDetector'
-import { captureFrame, detectImageFormat, type CaptureResult } from './frameCapture'
+import { captureFrame, cropVisibleTabCapture, detectImageFormat, type CaptureResult } from './frameCapture'
 import { CaptureScheduler } from './captureScheduler'
 import { VisualProbeScheduler, type ProbeCaptureOutcome } from './visualProbeScheduler'
 import {
@@ -149,6 +149,7 @@ declare global {
     timecodes: number[],
     mode: 'seek' | 'playback',
     settleMs: number,
+    captureSurface: 'video' | 'visible_tab' = 'video',
   ): void {
     const v = currentVideo && currentVideo.isConnected ? currentVideo : findBestVideo()
     currentVideo = v
@@ -179,6 +180,16 @@ declare global {
     planItems = timecodes.map((t, index) => ({ index, requestedTime: t, status: 'pending' as const }))
 
     planRunner = new PlannedCaptureRunner({
+      captureFn: async (video) => {
+        if (captureSurface === 'video') return captureFrame(video)
+        const response = await new Promise<{ ok: boolean; dataUrl?: string }>((resolve) => {
+          chrome.runtime.sendMessage({ type: 'CAPTURE_VISIBLE_TAB' }, resolve)
+        })
+        if (!response.ok || !response.dataUrl) {
+          throw new CaptureError('CAPTURE_ERROR', 'Chrome ne peut pas capturer l’onglet visible.')
+        }
+        return cropVisibleTabCapture(response.dataUrl, video.getBoundingClientRect())
+      },
       onItem(state) {
         planItems[state.index] = state
         chrome.runtime.sendMessage({
@@ -447,7 +458,7 @@ declare global {
             break
           }
           case 'RUN_PLAN': {
-            startPlan(msg.galleryId, msg.timecodes, msg.mode, msg.settleMs)
+            startPlan(msg.galleryId, msg.timecodes, msg.mode, msg.settleMs, msg.captureSurface)
             sendResponse({ ok: true, kind: 'PLAN', plan: planState() })
             break
           }

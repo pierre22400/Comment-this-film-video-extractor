@@ -109,6 +109,40 @@ export function captureFrame(video: HTMLVideoElement): CaptureResult {
   return { dataUrl, stats }
 }
 
+/**
+ * Recadre une image de l'onglet visible sur le rectangle CSS du lecteur.
+ * Cette fonction traite uniquement les pixels que Chrome a déjà accepté de
+ * livrer via `captureVisibleTab`; elle ne lit jamais le flux vidéo protégé.
+ */
+export async function cropVisibleTabCapture(
+  fullTabDataUrl: string,
+  rect: DOMRect,
+): Promise<CaptureResult> {
+  if (rect.width <= 1 || rect.height <= 1) throw new CaptureError('CAPTURE_ERROR', 'Lecteur sans zone visible.')
+  const image = new Image()
+  image.src = fullTabDataUrl
+  try {
+    await image.decode()
+  } catch {
+    throw new CaptureError('CAPTURE_ERROR', 'Capture de l’onglet illisible.')
+  }
+  const scaleX = image.naturalWidth / window.innerWidth
+  const scaleY = image.naturalHeight / window.innerHeight
+  const sourceX = Math.max(0, Math.round(rect.left * scaleX))
+  const sourceY = Math.max(0, Math.round(rect.top * scaleY))
+  const sourceW = Math.min(image.naturalWidth - sourceX, Math.round(rect.width * scaleX))
+  const sourceH = Math.min(image.naturalHeight - sourceY, Math.round(rect.height * scaleY))
+  if (sourceW <= 1 || sourceH <= 1) throw new CaptureError('CAPTURE_ERROR', 'Lecteur hors de la zone visible.')
+  const { width, height } = computeTargetSize(sourceW, sourceH)
+  const cv = getCanvas()
+  cv.width = width
+  cv.height = height
+  const ctx = cv.getContext('2d')
+  if (!ctx) throw new CaptureError('CAPTURE_ERROR', 'Contexte 2D indisponible')
+  ctx.drawImage(image, sourceX, sourceY, sourceW, sourceH, 0, 0, width, height)
+  return { dataUrl: cv.toDataURL('image/webp', QUALITY), stats: computeFrameStats(ctx, width, height) }
+}
+
 /** Extrait le type MIME réel de la data URL (WebP, ou PNG en repli navigateur). */
 export function detectImageFormat(dataUrl: string): string {
   const match = /^data:([^;]+)/.exec(dataUrl)

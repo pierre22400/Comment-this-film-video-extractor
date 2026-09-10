@@ -31,6 +31,9 @@ export default defineManifest({
     service_worker: 'src/background/index.ts',
     type: 'module',
   },
-  permissions: ['activeTab', 'scripting', 'downloads'],
+  // `tabs` est requis uniquement pour l'essai explicite « onglet visible » :
+  // Chrome fournit alors une image de ce qui est affiché, sans accès au flux
+  // Prime ni contournement DRM. L'essai reste limité à l'onglet actif.
+  permissions: ['activeTab', 'scripting', 'downloads', 'tabs'],
   host_permissions: ['http://127.0.0.1:8787/*'],
 })

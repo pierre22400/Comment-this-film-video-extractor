@@ -229,7 +229,10 @@ export function Popup() {
     setProbes(await listVisualProbes())
   }
 
-  async function handleRunPlan(plan: ResolvedPlan): Promise<boolean> {
+  async function handleRunPlan(
+    plan: ResolvedPlan,
+    captureSurface: 'video' | 'visible_tab' = 'video',
+  ): Promise<boolean> {
     if (tabId === null) return false
     const info = state?.videoInfo ?? null
     const galleryId = await runPlan(tabId, {
@@ -241,6 +244,7 @@ export function Popup() {
       strategy: plan.mode,
       timecodes: plan.timecodes,
       settleMs: plan.settleMs,
+      captureSurface,
     })
     if (galleryId === null) return false
     setSelectedGalleryId(galleryId)

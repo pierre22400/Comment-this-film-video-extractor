@@ -35,6 +35,8 @@ export type ContentRequest =
       timecodes: number[]
       mode: PlannerMode
       settleMs: number
+      /** Essai explicite : capture de l'affichage de l'onglet, puis recadrage du lecteur. */
+      captureSurface?: 'video' | 'visible_tab'
     }
   | { type: 'CANCEL_PLAN' }
   | { type: 'GET_PLAN_STATE' }
@@ -58,6 +60,9 @@ export interface PlanRunState {
 // --- Content script / Popup -> Service worker (chrome.runtime.sendMessage) ---
 export type BackgroundRequest =
   | { type: 'SAVE_SNAPSHOT'; dataUrl: string; meta: SnapshotMeta }
+  // Demande provenant UNIQUEMENT du content script de l'onglet actif pendant
+  // l'essai explicite Prime. `captureVisibleTab` n'accède pas au flux DRM.
+  | { type: 'CAPTURE_VISIBLE_TAB' }
   | { type: 'CLEAR' }
   // Diagnostic manuel : actions explicites uniquement, jamais liées à la
   // capture périodique automatique.
@@ -119,6 +124,7 @@ export interface AnalysisStatus {
 
 export type BackgroundResponse =
   | { ok: true; id?: number }
+  | { ok: true; dataUrl: string }
   | { ok: true; status: AnalysisStatus }
   | { ok: true; enqueued: number }
   | { ok: true; probe: VisualProbeRequest }

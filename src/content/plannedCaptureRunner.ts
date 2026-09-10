@@ -64,7 +64,7 @@ export interface PlannedRunnerCallbacks {
   /** Le plan est terminé (tous les items résolus) ou annulé. */
   onDone(summary: PlannedRunSummary): void
   /** Capture injectable (défaut : `captureFrame`). */
-  captureFn?: (video: HTMLVideoElement) => CaptureResult
+  captureFn?: (video: HTMLVideoElement) => CaptureResult | Promise<CaptureResult>
   /** Pause asynchrone injectable (défaut : setTimeout). */
   sleep?: (ms: number) => Promise<void>
 }
@@ -113,7 +113,7 @@ export class PlannedCaptureRunner {
   private running = false
   private readonly cancelWaiters = new Set<() => void>()
 
-  private readonly captureFn: (video: HTMLVideoElement) => CaptureResult
+  private readonly captureFn: (video: HTMLVideoElement) => CaptureResult | Promise<CaptureResult>
   private readonly sleep: (ms: number) => Promise<void>
   private readonly opts: Required<PlannedRunOptions>
 
@@ -260,7 +260,7 @@ export class PlannedCaptureRunner {
       }
       let result: CaptureResult
       try {
-        result = this.captureFn(video as unknown as HTMLVideoElement)
+        result = await this.captureFn(video as unknown as HTMLVideoElement)
       } catch (err) {
         const code = err instanceof CaptureError ? err.code : 'CAPTURE_ERROR'
         const { cause } = classifyCaptureError(code)

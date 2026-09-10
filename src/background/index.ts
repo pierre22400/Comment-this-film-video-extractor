@@ -300,10 +300,30 @@ void (async () => {
 })()
 
 chrome.runtime.onMessage.addListener(
-  (msg: BackgroundRequest, _sender, sendResponse: (r: BackgroundResponse) => void) => {
+  (msg: BackgroundRequest, sender, sendResponse: (r: BackgroundResponse) => void) => {
     void (async () => {
       try {
         switch (msg.type) {
+          case 'CAPTURE_VISIBLE_TAB': {
+            // Essai d'affichage explicite : Chrome décide lui-même si les pixels
+            // protégés sont visibles. Aucun flux Prime, DRM ou déchiffrement n'est
+            // lu par l'extension. L'onglet doit rester actif et au premier plan.
+            const windowId = sender.tab?.windowId
+            if (windowId === undefined || !chrome.tabs.captureVisibleTab) {
+              sendResponse({ ok: false, message: 'Capture de l’onglet visible indisponible.' })
+              break
+            }
+            try {
+              const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' })
+              sendResponse({ ok: true, dataUrl })
+            } catch (err) {
+              sendResponse({
+                ok: false,
+                message: err instanceof Error ? err.message : 'Chrome a refusé la capture de l’onglet.',
+              })
+            }
+            break
+          }
           case 'SAVE_SNAPSHOT': {
             const blob = await dataUrlToBlob(msg.dataUrl)
             // Une image marquée non exploitable à la capture (ex : frame

@@ -18,7 +18,7 @@ interface Props {
   /** Galerie dont les images sont actuellement affichées. */
   selectedGalleryId: string | null
   onSelectGallery: (galleryId: string | null) => void
-  onRun: (plan: ResolvedPlan) => Promise<boolean>
+  onRun: (plan: ResolvedPlan, captureSurface: 'video' | 'visible_tab') => Promise<boolean>
   onCancel: () => void
   onAnalyzeGallery: (galleryId: string) => void
   onExportGallery: (galleryId: string) => void
@@ -40,6 +40,7 @@ export function ScannerPanel({
   const [text, setText] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [useVisibleTab, setUseVisibleTab] = useState(false)
 
   // Aperçu du plan résolu, recalculé à chaque saisie (validation lisible).
   const preview = useMemo(() => {
@@ -58,7 +59,7 @@ export function ScannerPanel({
       return
     }
     setSubmitting(true)
-    const ok = await onRun(result.plan)
+    const ok = await onRun(result.plan, useVisibleTab ? 'visible_tab' : 'video')
     setSubmitting(false)
     if (!ok) setError('Impossible de lancer le plan (vidéo indisponible dans cet onglet ?).')
   }
@@ -100,6 +101,21 @@ export function ScannerPanel({
           Exemple : stress 300
         </button>
       </div>
+
+      <label className="scanner-gemini">
+        <input
+          type="checkbox"
+          checked={useVisibleTab}
+          disabled={running}
+          onChange={(e) => setUseVisibleTab(e.target.checked)}
+        />
+        Essai Prime : capturer l&apos;onglet visible, puis recadrer le lecteur
+      </label>
+      {useVisibleTab && (
+        <p className="hint">
+          Gardez Prime au premier plan et le lecteur entièrement visible. Chrome peut encore masquer le contenu protégé : ce test ne contourne pas le DRM.
+        </p>
+      )}
 
       {preview && !preview.ok && <p className="analysis-error">{preview.message}</p>}
       {preview && preview.ok && (

@@ -129,6 +129,7 @@ export async function runPlan(
     strategy: PlannerMode
     timecodes: number[]
     settleMs: number
+    captureSurface?: 'video' | 'visible_tab'
   },
 ): Promise<string | null> {
   const created = await sendToBackground({
@@ -149,6 +150,7 @@ export async function runPlan(
     timecodes: params.timecodes,
     mode: params.strategy,
     settleMs: params.settleMs,
+    captureSurface: params.captureSurface,
   })
   if (!started.ok) {
     // La galerie a été créée mais la vidéo n'est pas disponible : on la finalise
