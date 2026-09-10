@@ -13,9 +13,18 @@ import {
   claimProbeForAnalysis,
   getSnapshot,
   getResumableProbeIds,
+  createGalleryRun,
+  getGalleryRun,
+  updateGalleryRun,
+  listGalleryRuns,
+  deleteGalleryRun,
+  getSnapshotsByGallery,
+  getAnalyzableGallerySnapshotIds,
 } from '../lib/snapshotStore'
-import type { BackgroundRequest, BackgroundResponse, AnalysisStatus } from '../lib/messages'
+import type { BackgroundRequest, BackgroundResponse, AnalysisStatus, ExportFile } from '../lib/messages'
 import type { Snapshot } from '../lib/types'
+import { emptyCounters, type GalleryRun } from '../lib/gallery'
+import { buildGalleryManifest, exportPath, imageFilename, jsonToDataUrl } from '../lib/export'
 import { AnalysisQueue, type DescribeOutcome } from './analysisQueue'
 import { VisualProbeQueue, type ProbeOutcome, type ClaimedProbeJob } from './visualProbeQueue'
 import type { DescribeSuccessBody, DescribeErrorBody } from '../lib/analysis'
@@ -44,6 +53,40 @@ let epoch = 0
 async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
   const res = await fetch(dataUrl)
   return res.blob()
+}
+
+/** Encode un Blob en data URL (préfixe MIME inclus) — pour l'export d'images. */
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  const base64 = await blobToBase64(blob)
+  const mime = blob.type || 'image/webp'
+  return `data:${mime};base64,${base64}`
+}
+
+/**
+ * Télécharge chaque fichier d'une galerie sous
+ * Téléchargements/Comment-this-film/<galleryId>/ via l'API `downloads`
+ * (permission minimale). Les téléchargements sont EXPLICITES (déclenchés par
+ * l'utilisateur) ; aucune écriture silencieuse hors de Téléchargements n'est
+ * possible. Sans échec bloquant : un fichier en erreur n'empêche pas les autres.
+ */
+async function downloadGalleryFiles(
+  galleryId: string,
+  files: { filename: string; dataUrl: string }[],
+): Promise<void> {
+  const downloads = chrome.downloads
+  if (!downloads?.download) return
+  for (const f of files) {
+    try {
+      await new Promise<void>((resolve) => {
+        downloads.download(
+          { url: f.dataUrl, filename: exportPath(galleryId, f.filename), saveAs: false },
+          () => resolve(),
+        )
+      })
+    } catch {
+      // Un téléchargement en erreur n'interrompt jamais l'export des suivants.
+    }
+  }
 }
 
 /** Encode un Blob en base64 (sans préfixe data:) dans le service worker. */
@@ -418,6 +461,125 @@ chrome.runtime.onMessage.addListener(
             sendResponse({ ok: true })
             break
           }
+
+          // --- Scanner visuel planifié (Cycle 3) ---
+          case 'CREATE_GALLERY_RUN': {
+            // Une exécution crée TOUJOURS une nouvelle galerie.
+            const id = crypto.randomUUID()
+            const run: GalleryRun = {
+              id,
+              name: msg.name,
+              createdAt: new Date().toISOString(),
+              pageUrl: msg.pageUrl,
+              pageTitle: msg.pageTitle,
+              platform: msg.platform,
+              fixtureName: msg.fixtureName,
+              strategy: msg.strategy,
+              state: 'running',
+              counters: emptyCounters(msg.planned),
+            }
+            await createGalleryRun(run)
+            sendResponse({ ok: true, galleryId: id })
+            break
+          }
+          case 'GALLERY_SNAPSHOT': {
+            // Une image capturée par le runner est stockée dans la galerie. Une
+            // image non exploitable (suspecte/bloquée) est conservée avec sa
+            // cause mais JAMAIS analysable ; l'analyse Gemini reste par ailleurs
+            // désactivée par défaut et activée séparément par galerie.
+            const blob = await dataUrlToBlob(msg.dataUrl)
+            const availability = msg.meta.visualAvailability ?? 'available'
+            const analyzable = isAnalyzable(availability) && blob.size > 0
+            const snapshot: Omit<Snapshot, 'id'> = {
+              capturedAt: msg.meta.capturedAt,
+              mediaTime: msg.meta.mediaTime,
+              pageTitle: msg.meta.pageTitle,
+              pageUrl: msg.meta.pageUrl,
+              videoWidth: msg.meta.videoWidth,
+              videoHeight: msg.meta.videoHeight,
+              mimeType: msg.meta.imageFormat,
+              image: blob,
+              // Jamais mise en file automatiquement : l'analyse est activée
+              // séparément et explicitement pour la galerie.
+              analysisState: analyzable ? 'not_requested' : 'not_applicable',
+              visualAvailability: msg.meta.visualAvailability,
+              visualCause: msg.meta.visualCause,
+              captureOrigin: 'manual',
+              galleryId: msg.galleryId,
+              requestedTime: msg.meta.requestedTime,
+              analysisErrorMessage: analyzable
+                ? undefined
+                : visualCauseMessage(msg.meta.visualCause ?? 'unsupported'),
+            }
+            const snapshotId = await addSnapshot(snapshot)
+            // Mise à jour des compteurs de la galerie.
+            const run = await getGalleryRun(msg.galleryId)
+            if (run) {
+              const counters = { ...run.counters }
+              if (analyzable) counters.captured += 1
+              else counters.unavailable += 1
+              await updateGalleryRun(msg.galleryId, { counters })
+            }
+            sendResponse({ ok: true, id: snapshotId })
+            break
+          }
+          case 'FINALIZE_GALLERY_RUN': {
+            await updateGalleryRun(msg.galleryId, {
+              state: msg.cancelled ? 'cancelled' : 'completed',
+            })
+            sendResponse({ ok: true })
+            break
+          }
+          case 'LIST_GALLERY_RUNS': {
+            const runs = await listGalleryRuns()
+            sendResponse({ ok: true, runs })
+            break
+          }
+          case 'DELETE_GALLERY_RUN': {
+            // Invalide les réponses en vol (une réponse tardive ne ressuscite pas
+            // une galerie effacée), puis supprime la galerie et ses snapshots.
+            epoch += 1
+            const deleted = await deleteGalleryRun(msg.galleryId)
+            sendResponse({ ok: true, deleted })
+            break
+          }
+          case 'ANALYZE_GALLERY': {
+            // Analyse Gemini ACTIVÉE SÉPARÉMENT pour cette galerie : seules les
+            // images valides sont mises en file (concurrence bornée par la file).
+            // N'active jamais l'analyse des captures périodiques ordinaires.
+            const ids = await getAnalyzableGallerySnapshotIds(msg.galleryId)
+            const enqueued = await enqueueIds(ids)
+            await updateGalleryRun(msg.galleryId, { geminiRequestedAt: new Date().toISOString() })
+            sendResponse({ ok: true, enqueued })
+            break
+          }
+          case 'EXPORT_GALLERY': {
+            const run = await getGalleryRun(msg.galleryId)
+            if (!run) {
+              sendResponse({ ok: false, message: 'Galerie introuvable.' })
+              break
+            }
+            const snaps = await getSnapshotsByGallery(msg.galleryId)
+            const ordered = [...snaps].sort((a, b) => a.id - b.id)
+            const files: ExportFile[] = []
+            for (let i = 0; i < ordered.length; i += 1) {
+              const s = ordered[i]
+              files.push({
+                filename: imageFilename(i, s.mimeType),
+                dataUrl: await blobToDataUrl(s.image),
+              })
+            }
+            const manifest = buildGalleryManifest(run, ordered)
+            files.push({ filename: 'manifest.json', dataUrl: jsonToDataUrl(manifest, btoa) })
+
+            // Téléchargements EXPLICITES sous Téléchargements/Comment-this-film/<id>/.
+            // Permission minimale `downloads`. Aucune écriture silencieuse hors
+            // du dossier Téléchargements n'est possible (limite documentée).
+            await downloadGalleryFiles(msg.galleryId, files)
+            sendResponse({ ok: true, files })
+            break
+          }
+
           default: {
             sendResponse({ ok: false, message: 'Message inconnu' })
           }

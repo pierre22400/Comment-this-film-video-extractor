@@ -2,6 +2,7 @@ import type { Snapshot, AnalysisPatch } from './types'
 import type { AnalysisState } from './analysis'
 import type { VisualProbeRequest, ProbeStatus } from './probe'
 import { isTerminalProbeStatus } from './probe'
+import type { GalleryRun } from './gallery'
 
 // Stockage local des snapshots dans IndexedDB (origine de l'extension).
 // Partagé par le service worker (écriture) et le popup (lecture) : les deux
@@ -11,24 +12,40 @@ import { isTerminalProbeStatus } from './probe'
 const DB_NAME = 'comment-this-film'
 const STORE = 'snapshots'
 const PROBE_STORE = 'visualProbes'
+const GALLERY_STORE = 'galleryRuns'
 // v3 (Cycle 2 révisé) : ajout du store `visualProbes` (sondes visuelles ciblées).
-// La migration reste NON destructive — le store `snapshots` n'est jamais touché,
-// les snapshots existants (Cycle 1 et Cycle 2) restent lisibles sans changement.
-const VERSION = 3
+// v4 (Cycle 3)        : ajout du store `galleryRuns` (galeries planifiées) et
+//                       d'un index `galleryId` sur `snapshots` (filtrage par galerie).
+// La migration reste NON destructive — le store `snapshots` n'est jamais vidé ni
+// réécrit, les snapshots existants (Cycle 1, Cycle 2, sondes) restent lisibles
+// sans changement. Les nouveaux stores/index sont seulement AJOUTÉS.
+const VERSION = 4
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, VERSION)
     req.onupgradeneeded = () => {
       const db = req.result
+      const tx = req.transaction
       // Création initiale OU montée de version : on garantit la présence des
-      // stores sans jamais supprimer ni réécrire les enregistrements existants.
+      // stores/index sans jamais supprimer ni réécrire les enregistrements existants.
       if (!db.objectStoreNames.contains(STORE)) {
         db.createObjectStore(STORE, { keyPath: 'id', autoIncrement: true })
       }
       if (!db.objectStoreNames.contains(PROBE_STORE)) {
         const probeStore = db.createObjectStore(PROBE_STORE, { keyPath: 'id' })
         probeStore.createIndex('status', 'status')
+      }
+      if (!db.objectStoreNames.contains(GALLERY_STORE)) {
+        db.createObjectStore(GALLERY_STORE, { keyPath: 'id' })
+      }
+      // Ajoute l'index `galleryId` au store existant `snapshots` s'il manque.
+      // On passe par la transaction de mise à niveau pour accéder au store déjà créé.
+      if (tx && db.objectStoreNames.contains(STORE)) {
+        const snapStore = tx.objectStore(STORE)
+        if (!snapStore.indexNames.contains('galleryId')) {
+          snapStore.createIndex('galleryId', 'galleryId')
+        }
       }
     }
     req.onsuccess = () => resolve(req.result)
@@ -420,4 +437,160 @@ export async function claimProbeForAnalysis(id: string): Promise<VisualProbeRequ
   } finally {
     db.close()
   }
+}
+
+// --- Galeries planifiées (Cycle 3) ---
+// Source de vérité PERSISTÉE d'une exécution de plan : métadonnées, compteurs,
+// plateforme, stratégie, état. Une exécution crée TOUJOURS une nouvelle galerie.
+// Migration NON destructive : les snapshots sans `galleryId` (Cycle 1/2, sondes)
+// ne sont jamais affectés.
+
+/** Crée (ou remplace idempotemment) une galerie planifiée. */
+export async function createGalleryRun(run: GalleryRun): Promise<void> {
+  const db = await openDB()
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(GALLERY_STORE, 'readwrite')
+      const req = tx.objectStore(GALLERY_STORE).put(run)
+      req.onsuccess = () => resolve()
+      req.onerror = () => reject(req.error)
+    })
+  } finally {
+    db.close()
+  }
+}
+
+/** Lit une galerie par id (undefined si absente). */
+export async function getGalleryRun(id: string): Promise<GalleryRun | undefined> {
+  const db = await openDB()
+  try {
+    return await new Promise<GalleryRun | undefined>((resolve, reject) => {
+      const tx = db.transaction(GALLERY_STORE, 'readonly')
+      const req = tx.objectStore(GALLERY_STORE).get(id)
+      req.onsuccess = () => resolve(req.result as GalleryRun | undefined)
+      req.onerror = () => reject(req.error)
+    })
+  } finally {
+    db.close()
+  }
+}
+
+/** Renvoie toutes les galeries, triées de la plus récente à la plus ancienne. */
+export async function listGalleryRuns(): Promise<GalleryRun[]> {
+  const db = await openDB()
+  try {
+    const all = await new Promise<GalleryRun[]>((resolve, reject) => {
+      const tx = db.transaction(GALLERY_STORE, 'readonly')
+      const req = tx.objectStore(GALLERY_STORE).getAll()
+      req.onsuccess = () => resolve(req.result as GalleryRun[])
+      req.onerror = () => reject(req.error)
+    })
+    return all.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * Applique un patch partiel à une galerie existante. N'écrit RIEN si la galerie
+ * a disparu (aucune résurrection après effacement). Renvoie true si écrit.
+ */
+export async function updateGalleryRun(id: string, patch: Partial<GalleryRun>): Promise<boolean> {
+  const db = await openDB()
+  try {
+    return await new Promise<boolean>((resolve, reject) => {
+      const tx = db.transaction(GALLERY_STORE, 'readwrite')
+      const store = tx.objectStore(GALLERY_STORE)
+      const getReq = store.get(id)
+      getReq.onsuccess = () => {
+        const current = getReq.result as GalleryRun | undefined
+        if (!current) {
+          resolve(false)
+          return
+        }
+        const updated: GalleryRun = {
+          ...current,
+          ...patch,
+          // Les compteurs sont fusionnés en surface (le patch fournit l'objet complet).
+          counters: patch.counters ?? current.counters,
+        }
+        const putReq = store.put(updated)
+        putReq.onsuccess = () => resolve(true)
+        putReq.onerror = () => reject(putReq.error)
+      }
+      getReq.onerror = () => reject(getReq.error)
+    })
+  } finally {
+    db.close()
+  }
+}
+
+/** Renvoie les snapshots d'une galerie donnée (ordre croissant d'id). */
+export async function getSnapshotsByGallery(galleryId: string): Promise<Snapshot[]> {
+  const db = await openDB()
+  try {
+    return await new Promise<Snapshot[]>((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readonly')
+      const index = tx.objectStore(STORE).index('galleryId')
+      const req = index.getAll(galleryId)
+      req.onsuccess = () => {
+        const rows = (req.result as Snapshot[]).sort((a, b) => a.id - b.id)
+        resolve(rows)
+      }
+      req.onerror = () => reject(req.error)
+    })
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * Efface UNE galerie ciblée : supprime son enregistrement ET tous ses snapshots.
+ * N'affecte jamais les autres galeries ni les snapshots hors galerie (Cycle 1/2,
+ * sondes). Renvoie le nombre de snapshots supprimés.
+ */
+export async function deleteGalleryRun(galleryId: string): Promise<number> {
+  const db = await openDB()
+  try {
+    return await new Promise<number>((resolve, reject) => {
+      const tx = db.transaction([STORE, GALLERY_STORE], 'readwrite')
+      const snapStore = tx.objectStore(STORE)
+      const index = snapStore.index('galleryId')
+      let deleted = 0
+      const cursorReq = index.openCursor(galleryId)
+      cursorReq.onsuccess = () => {
+        const cursor = cursorReq.result
+        if (cursor) {
+          cursor.delete()
+          deleted += 1
+          cursor.continue()
+        } else {
+          tx.objectStore(GALLERY_STORE).delete(galleryId)
+        }
+      }
+      cursorReq.onerror = () => reject(cursorReq.error)
+      tx.oncomplete = () => resolve(deleted)
+      tx.onerror = () => reject(tx.error)
+    })
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * Ids des snapshots ANALYSABLES d'une galerie (image `available`, non déjà
+ * en file/en cours/décrite/non applicable) — base de l'analyse Gemini activée
+ * séparément par galerie. Une image non exploitable n'est JAMAIS incluse.
+ */
+export async function getAnalyzableGallerySnapshotIds(galleryId: string): Promise<number[]> {
+  const rows = await getSnapshotsByGallery(galleryId)
+  return rows
+    .filter((s) => {
+      const availability = s.visualAvailability ?? 'available'
+      if (availability !== 'available') return false
+      if (s.image.size === 0) return false
+      const st = s.analysisState ?? 'not_requested'
+      return st === 'not_requested' || st === 'failed'
+    })
+    .map((s) => s.id)
 }

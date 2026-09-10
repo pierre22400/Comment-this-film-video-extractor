@@ -2,7 +2,12 @@ import { findBestVideo } from './videoDetector'
 import { captureFrame, detectImageFormat, type CaptureResult } from './frameCapture'
 import { CaptureScheduler } from './captureScheduler'
 import { VisualProbeScheduler, type ProbeCaptureOutcome } from './visualProbeScheduler'
-import type { ContentRequest, ContentResponse, ProbeDefinition } from '../lib/messages'
+import {
+  PlannedCaptureRunner,
+  type PlannedItemState,
+  type PlannedRunSummary,
+} from './plannedCaptureRunner'
+import type { ContentRequest, ContentResponse, ProbeDefinition, PlanRunState } from '../lib/messages'
 import type { VideoInfo, CaptureState, SnapshotMeta } from '../lib/types'
 import { CaptureError, ERROR_MESSAGES, isCaptureErrorCode } from '../lib/errors'
 import {
@@ -112,6 +117,89 @@ declare global {
       chrome.runtime.sendMessage({ type: 'PROBE_MISSED', id, captureAttempts: outcome.captureAttempts })
     },
   })
+
+  // --- Scanner visuel planifié (Cycle 3) ---
+  // Exécution indépendante de la capture périodique et des sondes : parcourt un
+  // plan résolu (seek/lecture) et remonte chaque image capturée au service
+  // worker pour stockage dans la galerie planifiée. Ne contourne jamais aucune
+  // protection ni n'extrait de flux.
+  let planRunner: PlannedCaptureRunner | null = null
+  let planGalleryId: string | null = null
+  let planItems: PlannedItemState[] = []
+  let planTotal = 0
+  let planSummary: PlannedRunSummary | null = null
+
+  function planState(): PlanRunState {
+    const done = planItems.filter((i) =>
+      ['captured', 'skipped', 'unavailable', 'failed', 'cancelled'].includes(i.status),
+    ).length
+    return {
+      running: planRunner?.isRunning ?? false,
+      galleryId: planGalleryId,
+      total: planTotal,
+      done,
+      items: planItems,
+      summary: planSummary,
+    }
+  }
+
+  function startPlan(
+    galleryId: string,
+    timecodes: number[],
+    mode: 'seek' | 'playback',
+    settleMs: number,
+  ): void {
+    const v = currentVideo && currentVideo.isConnected ? currentVideo : findBestVideo()
+    currentVideo = v
+    if (!v) throw new CaptureError('VIDEO_NOT_FOUND')
+
+    // Annule une exécution précédente éventuelle (une seule à la fois).
+    planRunner?.cancel()
+    planGalleryId = galleryId
+    planTotal = timecodes.length
+    planSummary = null
+    // Pré-remplit la liste des items en 'pending' pour l'affichage immédiat.
+    planItems = timecodes.map((t, index) => ({ index, requestedTime: t, status: 'pending' as const }))
+
+    planRunner = new PlannedCaptureRunner({
+      onItem(state) {
+        planItems[state.index] = state
+      },
+      onCapture(event) {
+        const meta: SnapshotMeta = {
+          snapshotId: 0,
+          capturedAt: new Date().toISOString(),
+          mediaTime: event.actualTime,
+          pageTitle: document.title,
+          pageUrl: location.href,
+          videoWidth: v.videoWidth,
+          videoHeight: v.videoHeight,
+          imageFormat: detectImageFormat(event.dataUrl),
+          visualAvailability: event.availability,
+          visualCause: event.cause,
+          captureOrigin: 'manual',
+          galleryId,
+          requestedTime: event.requestedTime,
+        }
+        chrome.runtime.sendMessage({
+          type: 'GALLERY_SNAPSHOT',
+          galleryId,
+          dataUrl: event.dataUrl,
+          meta,
+        })
+      },
+      onDone(summary) {
+        planSummary = summary
+        chrome.runtime.sendMessage({
+          type: 'FINALIZE_GALLERY_RUN',
+          galleryId,
+          cancelled: summary.cancelled,
+        })
+      },
+    })
+
+    void planRunner.run(v, timecodes, mode, settleMs)
+  }
 
   function getVideoInfo(v: HTMLVideoElement | null): VideoInfo | null {
     if (!v) return null
@@ -301,6 +389,20 @@ declare global {
           case 'UNREGISTER_VISUAL_PROBE': {
             probeScheduler.unregister(msg.id)
             sendResponse({ ok: true, kind: 'STATE', state: getState() })
+            break
+          }
+          case 'RUN_PLAN': {
+            startPlan(msg.galleryId, msg.timecodes, msg.mode, msg.settleMs)
+            sendResponse({ ok: true, kind: 'PLAN', plan: planState() })
+            break
+          }
+          case 'CANCEL_PLAN': {
+            planRunner?.cancel()
+            sendResponse({ ok: true, kind: 'PLAN', plan: planState() })
+            break
+          }
+          case 'GET_PLAN_STATE': {
+            sendResponse({ ok: true, kind: 'PLAN', plan: planState() })
             break
           }
           default: {

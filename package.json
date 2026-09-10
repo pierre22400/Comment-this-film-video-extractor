@@ -1,8 +1,8 @@
 {
   "name": "comment-this-film",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Cycle 2 — Extension Chrome MV3 : capture de frames d'une vidéo HTML5 puis description visuelle via un relais Gemini local.",
+  "description": "Cycle 3 — Extension Chrome MV3 : capture de frames d'une vidéo HTML5 (périodique, sondes ciblées, scanner visuel planifié) puis description visuelle via un relais Gemini local.",
   "type": "module",
   "scripts": {
     "dev": "vite",

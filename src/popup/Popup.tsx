@@ -13,12 +13,24 @@ import {
   createVisualProbe,
   cancelVisualProbe,
   listVisualProbes,
+  runPlan,
+  cancelPlan,
+  getPlanState,
+  listGalleryRuns,
+  deleteGalleryRun,
+  analyzeGallery,
+  exportGallery,
 } from './api'
 import { getAllSnapshots, countSnapshots } from '../lib/snapshotStore'
+import { detectPlatform } from '../lib/platform'
+import type { PlanRunState } from '../lib/messages'
+import type { GalleryRun } from '../lib/gallery'
+import type { ResolvedPlan } from '../lib/planner'
 import { IntervalSelector } from './components/IntervalSelector'
 import { StatusPanel } from './components/StatusPanel'
 import { DiagnosticPanel } from './components/DiagnosticPanel'
 import { VisualProbePanel } from './components/VisualProbePanel'
+import { ScannerPanel } from './components/ScannerPanel'
 import { Gallery } from './components/Gallery'
 import { SnapshotDetail } from './components/SnapshotDetail'
 
@@ -29,6 +41,8 @@ function unanalyzed(s: Snapshot): boolean {
 
 export function Popup() {
   const [tabId, setTabId] = useState<number | null>(null)
+  const [pageUrl, setPageUrl] = useState('')
+  const [pageTitle, setPageTitle] = useState('')
   const [ready, setReady] = useState(false)
   const [detectError, setDetectError] = useState<string | null>(null)
   const [state, setState] = useState<CaptureState | null>(null)
@@ -37,6 +51,8 @@ export function Popup() {
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [analysis, setAnalysis] = useState<AnalysisStatus>({ queued: 0, analyzing: 0 })
   const [probes, setProbes] = useState<VisualProbeRequest[]>([])
+  const [planState, setPlanState] = useState<PlanRunState | null>(null)
+  const [galleryRuns, setGalleryRuns] = useState<GalleryRun[]>([])
   const lastCount = useRef(-1)
   const lastSig = useRef('')
 
@@ -94,6 +110,8 @@ export function Popup() {
       }
       if (cancelled) return
       setTabId(tab.id)
+      setPageUrl(tab.url ?? '')
+      setPageTitle(tab.title ?? '')
       setReady(true)
       const resp = await sendToTab(tab.id, { type: 'GET_STATE' })
       if (!cancelled && resp.ok && resp.kind === 'STATE') {
@@ -106,6 +124,10 @@ export function Popup() {
       if (!cancelled && st) setAnalysis(st)
       const pr = await listVisualProbes()
       if (!cancelled) setProbes(pr)
+      const ps = await getPlanState(tab.id)
+      if (!cancelled) setPlanState(ps)
+      const gr = await listGalleryRuns()
+      if (!cancelled) setGalleryRuns(gr)
       await reloadGallery()
     })()
     return () => {
@@ -128,10 +150,14 @@ export function Popup() {
       if (st) setAnalysis(st)
       const pr = await listVisualProbes()
       setProbes(pr)
+      const ps = await getPlanState(tabId)
+      setPlanState(ps)
+      const gr = await listGalleryRuns()
+      setGalleryRuns(gr)
 
       const c = await countSnapshots()
-      const busy = (st?.queued ?? 0) > 0 || (st?.analyzing ?? 0) > 0
-      // Recharge si le nombre change, ou tant que des analyses sont en cours.
+      const busy = (st?.queued ?? 0) > 0 || (st?.analyzing ?? 0) > 0 || (ps?.running ?? false)
+      // Recharge si le nombre change, ou tant que des analyses/plan sont en cours.
       if (c !== lastCount.current || busy) await reloadGallery()
     }, 1000)
     return () => clearInterval(timer)
@@ -193,11 +219,58 @@ export function Popup() {
     setProbes(await listVisualProbes())
   }
 
+  async function handleRunPlan(plan: ResolvedPlan): Promise<boolean> {
+    if (tabId === null) return false
+    const info = state?.videoInfo ?? null
+    const galleryId = await runPlan(tabId, {
+      name: plan.name,
+      fixtureName: plan.name,
+      pageUrl: pageUrl,
+      pageTitle: pageTitle,
+      platform: detectPlatform(pageUrl),
+      strategy: plan.mode,
+      timecodes: plan.timecodes,
+      settleMs: plan.settleMs,
+    })
+    if (galleryId === null) return false
+    setGalleryRuns(await listGalleryRuns())
+    if (info) setPlanState(await getPlanState(tabId))
+    return true
+  }
+
+  async function handleCancelPlan() {
+    if (tabId === null) return
+    await cancelPlan(tabId)
+    setPlanState(await getPlanState(tabId))
+    setGalleryRuns(await listGalleryRuns())
+  }
+
+  async function handleAnalyzeGallery(galleryId: string) {
+    await analyzeGallery(galleryId)
+    setGalleryRuns(await listGalleryRuns())
+    const st = await getAnalysisStatus()
+    if (st) setAnalysis(st)
+    await reloadGallery()
+  }
+
+  async function handleExportGallery(galleryId: string) {
+    await exportGallery(galleryId)
+  }
+
+  async function handleDeleteGallery(galleryId: string) {
+    await deleteGalleryRun(galleryId)
+    setGalleryRuns(await listGalleryRuns())
+    lastSig.current = ''
+    await reloadGallery()
+  }
+
   return (
     <div className="app">
       <header className="app-header">
         <h1>Comment-this-film</h1>
-        <span className="cycle">Cycle 2 · capture locale + sondes visuelles ciblées (relais local)</span>
+        <span className="cycle">
+          Cycle 3 · capture locale + sondes ciblées + scanner visuel planifié (relais local)
+        </span>
       </header>
 
       <StatusPanel state={state} detectError={detectError} />
@@ -240,6 +313,17 @@ export function Popup() {
         currentTime={state?.videoInfo?.currentTime ?? null}
         onCreate={handleCreateProbe}
         onCancel={handleCancelProbe}
+      />
+
+      <ScannerPanel
+        knownDuration={state?.videoInfo?.duration ?? null}
+        planState={planState}
+        runs={galleryRuns}
+        onRun={handleRunPlan}
+        onCancel={handleCancelPlan}
+        onAnalyzeGallery={handleAnalyzeGallery}
+        onExportGallery={handleExportGallery}
+        onDeleteGallery={handleDeleteGallery}
       />
 
       <DiagnosticPanel

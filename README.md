@@ -1,9 +1,15 @@
-# Comment-this-film — Cycle 2
+# Comment-this-film — Cycle 3
 
-Extension Google Chrome (Manifest V3) qui **capture périodiquement des images
-d'une vidéo HTML5** dans l'onglet actif, les stocke localement, puis — sur
-activation explicite — envoie chaque image à **Gemini** (via un relais serveur
+Extension Google Chrome (Manifest V3) qui **capture des images d'une vidéo
+HTML5** dans l'onglet actif et les stocke localement. Trois modes coexistent :
+**capture périodique** (Cycle 1/2), **sondes visuelles ciblées** (Cycle 2
+révisé) et **scanner visuel planifié** (Cycle 3, voir plus bas). Sur activation
+explicite, les images valides sont envoyées à **Gemini** (via un relais serveur
 local) pour obtenir une **description visuelle courte et factuelle**.
+
+> La description ci-dessous conserve l'historique complet des cycles 1 et 2 ;
+> les nouveautés du Cycle 3 sont détaillées dans la section
+> **« Cycle 3 — scanner visuel planifié »** et dans **`CYCLE3_REPORT.md`**.
 
 > **Limite stricte du Cycle 2 :** Gemini décrit UNIQUEMENT ce qui est
 > directement visible dans une image isolée. Il n'y a encore **aucune**
@@ -130,6 +136,108 @@ sans bascule automatique.
 
 ---
 
+## Cycle 3 — scanner visuel planifié
+
+Un **mode séparé** s'ajoute aux deux précédents : l'utilisateur colle une
+**fixture JSON de planner**, l'extension effectue les captures aux **timecodes
+demandés**, crée une **nouvelle galerie locale à chaque exécution**, et —
+uniquement sur **activation explicite** — envoie les images **valides** de cette
+galerie au relais Gemini local. Les fonctionnalités et tests du Cycle 2 sont
+**préservés**.
+
+> **Sécurité (inchangée et stricte) :** aucun contournement DRM/EME/CORS/HDCP,
+> aucune extraction de flux. Une image **noire ou indisponible** (fréquent sur
+> Prime Video) est un **résultat valable à diagnostiquer**, jamais un échec à
+> masquer ni une accusation de DRM.
+
+### Planner JSON v1
+
+```json
+{
+  "version": 1,
+  "name": "stress-test-01",
+  "mode": "seek",
+  "settleMs": 450,
+  "items": [
+    { "at": "00:00:30" },
+    { "at": "00:01:00" },
+    { "from": "00:05:00", "count": 10, "everySeconds": 5 }
+  ]
+}
+```
+
+- Timecodes : `HH:MM:SS(.mmm)` **ou** secondes décimales positives.
+- Rafales développées de façon **déterministe**, puis **tri + déduplication**
+  avec une tolérance documentée de **50 ms**.
+- Plan **borné à 500 captures** ; un plan **vide/invalide/hors durée** est rejeté
+  avec un message lisible. `mode` : `seek` (défaut) ou `playback` ; `settleMs`
+  entre 0 et 5000 (défaut 400).
+- Exemples chargeables : `fixtures/planners/youtube-smoke.json` et
+  `fixtures/planners/scanner-stress-300.json` (reproductibles).
+
+### Runner de capture (`src/content/plannedCaptureRunner.ts`)
+
+- **« Exécuter le plan »** / **« Annuler »**.
+- **seek** (défaut) : règle `video.currentTime`, attend `seeked` puis une frame
+  présentée si disponible, applique `settleMs`, capture. Attentes et retries
+  **strictement bornés** (jamais de boucle infinie).
+- **playback** : suit la lecture **naturelle** jusqu'au timecode — **aucune
+  vitesse de lecture non exposée n'est jamais forcée**.
+- Le timecode observé est **toujours** `video.currentTime`.
+- Statuts persistants : `pending`, `seeking`, `capturing`, `captured`,
+  `skipped`, `unavailable`, `failed`, `cancelled`, avec progression, timecode
+  demandé et timecode capturé.
+
+### Galeries locales, plateformes et export
+
+- Images en **WebP** (max 1280×720, qualité 0,80), inchangé.
+- Objet persistant **`GalleryRun`** (id, nom, date, URL/titre, plateforme,
+  fixture, stratégie, état, compteurs). **Une exécution = une nouvelle galerie.**
+  Migration IndexedDB **v3 → v4 non destructive** (test dédié).
+- **Reconnaissance de plateforme** : YouTube et Prime Video affichés
+  explicitement, repli **HTML5 générique**.
+- **Sélecteur de galerie** + **effacement ciblé** après confirmation.
+- **« Exporter la galerie »** : téléchargements **explicites** des WebP et d'un
+  `manifest.json` sous `Téléchargements/Comment-this-film/<gallery-id>/`
+  (permission minimale `downloads`). Une extension ne peut pas administrer
+  silencieusement un dossier arbitraire hors de Téléchargements : la galerie
+  **gérée** par l'extension est **IndexedDB**.
+
+### Gemini activable séparément (par galerie)
+
+Case **désactivée par défaut** : « Analyser avec Gemini les captures de cette
+galerie ». Désactivée → **aucun** appel Gemini. Activée → seules les images
+**valides** de la galerie choisie sont mises en file (concurrence bornée). Cela
+**n'active jamais** l'analyse des captures périodiques ordinaires. Une frame
+noire/uniforme/bloquée/non décodable devient `not_applicable` et ne part
+**jamais** vers Gemini.
+
+### Procédure de test manuel du scanner planifié
+
+1. `pnpm build` puis recharger l'extension dans `chrome://extensions`.
+2. Ouvrir une vidéo (YouTube standard non protégée pour un test complet, ou
+   Prime Video pour observer le diagnostic d'indisponibilité).
+3. Ouvrir le popup → section **Scanner visuel planifié**.
+4. Cliquer **« Exemple : YouTube smoke »** (ou coller un plan), vérifier
+   l'**aperçu du plan résolu** (nombre de captures, mode, settle).
+5. Cliquer **« Exécuter le plan »** → suivre la **progression** (statuts par
+   item : positionnement, capture, capturé/ignoré/indisponible).
+6. Vérifier qu'une **nouvelle galerie** apparaît dans le sélecteur avec ses
+   compteurs.
+7. (Facultatif, avec relais + clé) cocher **« Analyser avec Gemini les captures
+   de cette galerie »** → seules les images valides sont décrites.
+8. **« Exporter la galerie »** → vérifier les fichiers WebP + `manifest.json`
+   sous `Téléchargements/Comment-this-film/<id>/`.
+9. **« Effacer cette galerie »** (avec confirmation) → la galerie et ses images
+   disparaissent, les autres galeries et les captures hors galerie restent.
+10. Sur **Prime Video** : constater que les images bloquées/noires deviennent
+    `unavailable` proprement, que le plan **continue**, et qu'**aucune** image
+    invalide n'est envoyée à Gemini.
+
+Le rapport factuel de ce cycle se trouve dans **`CYCLE3_REPORT.md`**.
+
+---
+
 ## Nouveautés du Cycle 2
 
 Pipeline d'analyse, **indépendant de la capture** :
@@ -238,10 +346,21 @@ src/background/
 
 src/content/
   visualProbeScheduler.ts   Sonde visuelle : capture pilotée par le timecode réel de la vidéo
+  plannedCaptureRunner.ts   Cycle 3 : runner du scanner planifié (seek/lecture, statuts, annulation)
+
+src/lib/ (ajouts Cycle 3)
+  planner.ts                Planner JSON v1 PUR (parse, expansion rafales, tri+dédup, bornes 500)
+  gallery.ts                Contrat GalleryRun (PUR) : métadonnées + compteurs + plateforme
+  platform.ts               Détection de plateforme PURE (YouTube / Prime / repli HTML5)
+  export.ts                 Manifest d'export PUR (noms de fichiers triés, chemins Téléchargements)
+
+fixtures/planners/          Exemples de plans reproductibles (youtube-smoke, scanner-stress-300)
 
 src/popup/
   analysisLabels.ts         Libellés/états du diagnostic manuel
   probeLabels.ts            Libellés FR des sondes visuelles (statuts, intentions)
+  scannerLabels.ts          Cycle 3 : libellés FR des statuts d'items planifiés + plateformes
+  components/ScannerPanel.tsx  Cycle 3 : plan JSON, aperçu, exécution, galeries, Gemini, export
   components/DiagnosticPanel.tsx    Actions explicites uniquement (jamais de bascule automatique)
   components/VisualProbePanel.tsx  Création/liste/annulation de sondes + raccourci démo
   (Gallery / SnapshotDetail mis à jour : origine de capture, description, erreur, réessai)
@@ -409,6 +528,7 @@ jamais un succès stocké.
 |-------------|----------|
 | `activeTab` | Accès **temporaire** à l'onglet courant, accordé uniquement quand l'utilisateur ouvre le popup. Évite une permission large de type `<all_urls>`. |
 | `scripting` | Injecter programmatiquement le content script de capture (et de sonde visuelle) dans l'onglet actif. |
+| `downloads` | **Cycle 3 uniquement** : export **explicite** d'une galerie planifiée (WebP + `manifest.json`) sous `Téléchargements/Comment-this-film/<id>/`. Aucune écriture silencieuse hors de Téléchargements n'est possible. |
 
 `host_permissions` : **uniquement** `http://127.0.0.1:8787/*` (le relais local,
 pour `/api/describe` **et** `/api/visual-probe`), jamais une permission d'hôte
@@ -445,8 +565,11 @@ Elle affiche simplement :
 > « La capture directe de cette vidéo est bloquée par le navigateur ou par la
 > protection du contenu. »
 
-Cette limitation est **acceptable pour le Cycle 1** (Netflix, Prime Video,
-Disney+, Apple TV+, etc. seront étudiés dans un cycle ultérieur).
+Cette limitation est **assumée par conception**. Au Cycle 3, le scanner visuel
+planifié **cible explicitement** YouTube et Prime Video : sur un contenu protégé
+(fréquent sur Prime Video), l'image bloquée/noire devient un item `unavailable`
+**diagnostiqué proprement**, le plan **continue**, et **aucune** image invalide
+n'est envoyée à Gemini. L'extension **ne contourne jamais** DRM/EME/CORS/HDCP.
 
 ---
 

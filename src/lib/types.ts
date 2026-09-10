@@ -54,6 +54,14 @@ export interface Snapshot {
   captureOrigin?: CaptureOrigin
   /** Identifiant de la sonde visuelle à l'origine de ce snapshot, si applicable. */
   probeId?: string
+
+  // --- Scanner visuel planifié (Cycle 3) ---
+  // Absent = snapshot hors galerie planifiée (comportement Cycle 1/2 inchangé).
+
+  /** Identifiant de la galerie planifiée (GalleryRun) à laquelle appartient ce snapshot. */
+  galleryId?: string
+  /** Timecode demandé par le plan (secondes), distinct du `mediaTime` réellement capturé. */
+  requestedTime?: number
 }
 
 /** Champs d'analyse modifiables (patch partiel appliqué à un snapshot). */
@@ -92,6 +100,9 @@ export interface SnapshotMeta {
   // Sonde visuelle ciblée : absent = capture périodique classique.
   captureOrigin?: CaptureOrigin
   probeId?: string
+  // Scanner visuel planifié (Cycle 3) : galerie d'appartenance + timecode demandé.
+  galleryId?: string
+  requestedTime?: number
 }
 
 /** Informations sur la vidéo détectée, affichées dans le popup. */

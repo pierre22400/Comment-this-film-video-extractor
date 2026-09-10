@@ -104,6 +104,18 @@ export function SnapshotDetail({ snapshot, url, onClose, onRetry }: Props) {
               <dd>Sonde visuelle ciblée</dd>
             </div>
           )}
+          {snapshot.galleryId && (
+            <div>
+              <dt>Origine</dt>
+              <dd>Scanner visuel planifié</dd>
+            </div>
+          )}
+          {snapshot.requestedTime != null && (
+            <div>
+              <dt>Timecode demandé</dt>
+              <dd className="mono">{formatTimecode(snapshot.requestedTime)}</dd>
+            </div>
+          )}
           {snapshot.analysisModel && (
             <div>
               <dt>Modèle</dt>

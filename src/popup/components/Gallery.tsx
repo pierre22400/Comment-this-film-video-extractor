@@ -43,6 +43,11 @@ export function Gallery({ snapshots, urls, onSelect }: Props) {
                         Sonde
                       </span>
                     )}
+                    {s.galleryId && (
+                      <span className="chip chip-idle" title="Issu d’un scanner visuel planifié">
+                        Plan
+                      </span>
+                    )}
                     <span className={`chip chip-${view.kind}`}>{view.text}</span>
                   </span>
                   <span className="mono">{formatTimecode(s.mediaTime)}</span>

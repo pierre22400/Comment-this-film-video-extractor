@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "name": "scanner-stress-300",
+  "mode": "seek",
+  "settleMs": 350,
+  "items": [
+    { "from": "00:00:02", "count": 300, "everySeconds": 5 }
+  ]
+}

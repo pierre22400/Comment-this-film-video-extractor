@@ -620,3 +620,99 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* --- Scanner visuel planifié (Cycle 3) --- */
+
+.scanner-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.scanner-textarea {
+  width: 100%;
+  resize: vertical;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 12px;
+}
+
+.scanner-examples,
+.scanner-actions,
+.scanner-gallery-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.scanner-preview {
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--surface-2);
+  border-radius: 6px;
+}
+
+.scanner-preview-times {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.scanner-progress {
+  margin-top: 10px;
+}
+
+.scanner-items {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.scanner-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.scanner-item-actual {
+  color: var(--muted);
+}
+
+.scanner-galleries {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.scanner-galleries select {
+  width: 100%;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px;
+}
+
+.scanner-gallery-detail {
+  margin-top: 8px;
+}
+
+.scanner-gemini {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text);
+}
