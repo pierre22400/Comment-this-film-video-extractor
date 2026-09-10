@@ -1,4 +1,4 @@
-# Comment-this-film — Cycle 3
+# Comment-this-film — Cycle 3 (POC YouTube + Prime Video validé)
 
 Extension Google Chrome (Manifest V3) qui **capture des images d'une vidéo
 HTML5** dans l'onglet actif et les stocke localement. Trois modes coexistent :
@@ -146,9 +146,11 @@ galerie au relais Gemini local. Les fonctionnalités et tests du Cycle 2 sont
 **préservés**.
 
 > **Sécurité (inchangée et stricte) :** aucun contournement DRM/EME/CORS/HDCP,
-> aucune extraction de flux. Une image **noire ou indisponible** (fréquent sur
-> Prime Video) est un **résultat valable à diagnostiquer**, jamais un échec à
-> masquer ni une accusation de DRM.
+> aucune extraction de flux. Une image noire ou indisponible reste un résultat
+> valable à diagnostiquer, jamais un échec à masquer ni une accusation de DRM.
+> Le POC propose aussi, par activation explicite, une capture de l'onglet tel
+> qu'il est affiché par Chrome, puis un recadrage du lecteur. Cette voie ne lit
+> pas le flux Prime ; Chrome reste seul à décider si les pixels sont fournis.
 
 ### Planner JSON v1
 
@@ -190,6 +192,26 @@ galerie au relais Gemini local. Les fonctionnalités et tests du Cycle 2 sont
   `skipped`, `unavailable`, `failed`, `cancelled`, avec progression, timecode
   demandé et timecode capturé.
 
+### Essai « onglet visible » pour Prime Video
+
+La case **« Essai Prime : capturer l'onglet visible, puis recadrer le lecteur »**
+active une seconde source d'image, distincte de la capture Canvas directe :
+
+```
+lecteur Prime affiché → chrome.tabs.captureVisibleTab()
+→ image de l'onglet visible → recadrage sur le rectangle du lecteur → WebP
+```
+
+- L'utilisateur garde l'onglet Prime **au premier plan** et le lecteur
+  **entièrement visible** pendant le scan.
+- Cette capture est une représentation fournie par Chrome de l'affichage ; elle
+  n'accède pas au média chiffré, ne déchiffre rien et n'extrait aucun flux.
+- Si Chrome livre des pixels noirs, le statut reste `unavailable` et Gemini ne
+  reçoit rien. Si l'image est exploitable, elle suit exactement le même cycle
+  local (galerie, export, Gemini explicitement demandé) que YouTube.
+- Le POC a été validé manuellement sur **YouTube** (capture Canvas directe) et
+  sur **Prime Video** (capture d'onglet visible recadrée).
+
 ### Galeries locales, plateformes et export
 
 - Images en **WebP** (max 1280×720, qualité 0,80), inchangé.
@@ -219,8 +241,8 @@ noire/uniforme/bloquée/non décodable devient `not_applicable` et ne part
 ### Procédure de test manuel du scanner planifié
 
 1. `pnpm build` puis recharger l'extension dans `chrome://extensions`.
-2. Ouvrir une vidéo (YouTube standard non protégée pour un test complet, ou
-   Prime Video pour observer le diagnostic d'indisponibilité).
+2. Ouvrir une vidéo YouTube ou Prime Video. Pour Prime, garder le lecteur
+   entièrement visible et cocher l'essai **« onglet visible »** décrit ci-dessus.
 3. Ouvrir le popup → section **Scanner visuel planifié**.
 4. Cliquer **« Exemple : YouTube smoke »** (ou coller un plan), vérifier
    l'**aperçu du plan résolu** (nombre de captures, mode, settle).
@@ -234,9 +256,10 @@ noire/uniforme/bloquée/non décodable devient `not_applicable` et ne part
    sous `Téléchargements/Comment-this-film/<id>/`.
 9. **« Effacer cette galerie »** (avec confirmation) → la galerie et ses images
    disparaissent, les autres galeries et les captures hors galerie restent.
-10. Sur **Prime Video** : constater que les images bloquées/noires deviennent
-    `unavailable` proprement, que le plan **continue**, et qu'**aucune** image
-    invalide n'est envoyée à Gemini.
+10. Sur **Prime Video** : vérifier d'abord un petit plan (8 captures) avec
+    l'essai **« onglet visible »**. Les images exploitables doivent apparaître
+    dans une nouvelle galerie ; une image noire isolée reste `unavailable` et
+    ne part jamais vers Gemini.
 
 Le rapport factuel de ce cycle se trouve dans **`CYCLE3_REPORT.md`**.
 
@@ -533,6 +556,7 @@ jamais un succès stocké.
 | `activeTab` | Accès **temporaire** à l'onglet courant, accordé uniquement quand l'utilisateur ouvre le popup. Évite une permission large de type `<all_urls>`. |
 | `scripting` | Injecter programmatiquement le content script de capture (et de sonde visuelle) dans l'onglet actif. |
 | `downloads` | **Cycle 3 uniquement** : export **explicite** d'une galerie planifiée (WebP + `manifest.json`) sous `Téléchargements/Comment-this-film/<id>/`. Aucune écriture silencieuse hors de Téléchargements n'est possible. |
+| `tabs` | **Cycle 3, essai explicite Prime** : demander à Chrome une image de l'onglet visible (`captureVisibleTab`), puis recadrer localement la zone du lecteur. Aucun accès au flux vidéo. |
 
 `host_permissions` : **uniquement** `http://127.0.0.1:8787/*` (le relais local,
 pour `/api/describe` **et** `/api/visual-probe`), jamais une permission d'hôte
@@ -543,10 +567,13 @@ manuel = actions explicites uniquement).
 
 ---
 
-## Fonctionnement de la capture Canvas
+## Fonctionnement des captures
 
-- Méthode unique : `HTMLVideoElement` → `CanvasRenderingContext2D.drawImage()` →
+- Mode standard : `HTMLVideoElement` → `CanvasRenderingContext2D.drawImage()` →
   `canvas.toDataURL('image/webp', 0.80)`.
+- Essai Prime explicite : `chrome.tabs.captureVisibleTab()` → image de l'onglet
+  → recadrage local du rectangle du lecteur → WebP. Il nécessite un onglet
+  visible au premier plan ; cette voie ne contourne aucune protection.
 - Quand disponible, `requestVideoFrameCallback()` est utilisé pour capturer une
   frame **réellement présentée** par le lecteur ; sinon repli sur une capture directe.
 - Résolution bornée à **1280 × 720** en conservant le ratio (jamais d'agrandissement
@@ -560,20 +587,21 @@ aucun service distant.
 
 ---
 
-## Vidéos protégées (DRM)
+## Vidéos protégées (DRM) et rendu visible
 
-Si une vidéo est protégée, le navigateur renvoie une image noire ou refuse la
-lecture des pixels. L'extension **ne tente jamais de contourner** cette protection.
-Elle affiche simplement :
+Si une vidéo est protégée, la capture directe du `<video>` peut produire une
+image noire ou refuser la lecture des pixels. L'extension **ne tente jamais de
+contourner** cette protection. Elle peut alors effectuer, seulement sur action
+explicite, l'essai de capture de l'onglet visible ; Chrome peut fournir une
+image affichée ou la masquer selon le rendu et la politique du contenu.
 
 > « La capture directe de cette vidéo est bloquée par le navigateur ou par la
 > protection du contenu. »
 
-Cette limitation est **assumée par conception**. Au Cycle 3, le scanner visuel
-planifié **cible explicitement** YouTube et Prime Video : sur un contenu protégé
-(fréquent sur Prime Video), l'image bloquée/noire devient un item `unavailable`
-**diagnostiqué proprement**, le plan **continue**, et **aucune** image invalide
-n'est envoyée à Gemini. L'extension **ne contourne jamais** DRM/EME/CORS/HDCP.
+Cette limite est **assumée par conception**. Le POC Cycle 3 a validé YouTube
+par capture directe et Prime Video par capture de l'onglet visible recadrée.
+Dans tous les cas, une image bloquée/noire devient un item `unavailable`, le
+plan continue, et aucune image invalide n'est envoyée à Gemini.
 
 ---
 
@@ -611,8 +639,11 @@ snapshot effacé (garde par génération/epoch).
 
 **Cycle 1 (capture) :**
 
-- Fonctionne uniquement sur les vidéos HTML5 non protégées.
-- Les contenus DRM ne sont pas capturables (par conception).
+- La capture Canvas directe fonctionne uniquement lorsque Chrome fournit les
+  pixels de la vidéo ; elle est validée sur YouTube.
+- L'essai d'onglet visible est validé sur Prime Video dans ce POC, mais dépend
+  du lecteur, de l'état visible de l'onglet et de la politique Chrome ; il n'est
+  pas une garantie universelle sur tous les contenus protégés.
 - La session de capture est locale à l'appareil ; « Effacer les captures »
   supprime définitivement les images et métadonnées.
 - L'interface popup ne fonctionne que chargée comme extension (les API `chrome.*`
