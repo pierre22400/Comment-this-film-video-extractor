@@ -1,4 +1,4 @@
-# Comment-this-film — Cycle 3 (POC YouTube + Prime Video validé)
+# Video Extractor — Cycle 3 (POC YouTube + Prime Video validé)
 
 Extension Google Chrome (Manifest V3) qui **capture des images d'une vidéo
 HTML5** dans l'onglet actif et les stocke localement. Trois modes coexistent :
