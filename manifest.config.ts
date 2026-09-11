@@ -19,13 +19,13 @@ import pkg from './package.json'
 // côté serveur.
 export default defineManifest({
   manifest_version: 3,
-  name: 'Comment-this-film',
+  name: 'SceneVibe video extractor',
   version: pkg.version,
   description:
     "Cycle 3 — Capture de frames d'une vidéo HTML5 : capture périodique, sondes visuelles ciblées et scanner visuel planifié (galeries locales) via un relais Gemini local.",
   action: {
     default_popup: 'index.html',
-    default_title: 'Comment-this-film',
+    default_title: 'SceneVibe video extractor',
   },
   background: {
     service_worker: 'src/background/index.ts',
