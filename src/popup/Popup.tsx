@@ -285,7 +285,7 @@ export function Popup() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>Comment-this-film</h1>
+        <h1>SceneVibe video extractor</h1>
         <span className="cycle">
           Cycle 3 · capture locale + sondes ciblées + scanner visuel planifié (relais local)
         </span>
